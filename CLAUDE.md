@@ -10,7 +10,7 @@ Copies a Kion install's **financial/org structure** to another install over the
 REST API:
 
 ```
-billing sources → OUs → funding sources → projects → budgets → scopes
+billing sources → OUs → funding sources → projects → budgets → accounts → scopes
 ```
 
 `export` reads a source install into a self-contained `snapshot.json`. `import`
@@ -87,11 +87,27 @@ API key: Kion → User Profile → App API Keys → create.
   - "budget timeframe not fully covered" → a month in `[start, end)` has no row.
   - "insufficient funds available on funding source" → a funding source is
     over-subscribed (its total allocation across budgets exceeds its amount).
+- **Cloud accounts** (`/v3/account`): unlike billing sources, the read **does**
+  expose `project_id` and `payer_id`, so accounts re-attach to the copied project +
+  billing source. Created as shells (`skip_access_checking` for aws/azure/gcp;
+  custom/oci have no such flag). Provider is derived from `account_type_id`
+  (`ACCOUNT_PROVIDER`); the read `account_number` maps to a different create field
+  per provider (`ACCOUNT_NUMBER_FIELD`: account_number / google_cloud_project_id /
+  subscription_uuid / tenancy_ocid). An account is recreatable only if its **payer
+  billing source was recreated** — so azure/gcp/anthropic accounts skip (their
+  billing sources skip). The `custom` create endpoint **rejects `account_type_id`**
+  (so anthropic/openai accounts created via it become type 29). Linked AWS accounts
+  (e.g. GovCloud) require `linked_aws_account_number`. Created accounts are added to
+  the in-memory `_t_acct_by_number` so the scope pass (next) can resolve them.
 - **Scopes** (`/beta/scope`, project cost-allocation rules): paginated
   (`{items, total}`). Criteria reference cloud **accounts** by id. Export
   translates account ids → stable `account_number`; import remaps back via the
-  target's accounts. Kion requires a scope to reference **≥1 existing account**, so
-  a scope is **skipped** if none of its accounts exist on the target.
+  target's accounts (now populated by the account pass). Kion requires a scope to
+  reference **≥1 existing account**, so a scope is **skipped** if none of its
+  accounts exist. Scope *conditions* are validated against the target's ingested
+  billing data — a condition referencing a tag key / region / service the target
+  hasn't seen is rejected (reported as failed with cause). Reconcile runs accounts
+  **before** scopes for this reason.
 - **Billing sources** (`/v4/billing-source`, paginated): the read exposes config
   but **never secrets** (`key_secret`, AWS `linked_role`, OCI `private_key`,
   Azure/GCP creds are redacted). Import recreates **custom/aws/oci** as

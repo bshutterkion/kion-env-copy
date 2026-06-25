@@ -16,7 +16,7 @@ import sys
 
 from .client import KionAPIError, KionClient
 
-SCHEMA_VERSION = 3  # v2 added scopes; v3 added billing sources
+SCHEMA_VERSION = 4  # v2 scopes; v3 billing sources; v4 accounts
 
 
 def _warn(msg: str) -> None:
@@ -55,9 +55,59 @@ def export_install(client: KionClient) -> dict:
     snapshot["billing_sources"] = _export_billing_sources(client)
     snapshot["funding_sources"] = _export_funding_sources(client)
     snapshot["projects"] = _export_projects(client)
+    snapshot["accounts"] = _export_accounts(client)
     snapshot["budgets"] = _export_budgets(client, snapshot["ous"], snapshot["projects"])
     snapshot["scopes"] = _export_scopes(client)
     return snapshot
+
+
+# account_type_id -> the create-endpoint provider. Account type ids are
+# system-managed and stable across installs. anthropic/openai accounts are created
+# through the custom endpoint.
+ACCOUNT_PROVIDER = {
+    1: "aws", 2: "aws", 4: "aws", 5: "aws",
+    3: "azure", 6: "azure", 7: "azure", 8: "azure", 9: "azure", 10: "azure",
+    11: "azure", 12: "azure", 13: "azure", 14: "azure", 16: "azure", 17: "azure",
+    18: "azure", 19: "azure", 20: "azure", 21: "azure", 22: "azure", 23: "azure",
+    24: "azure", 25: "azure",
+    15: "google-cloud",
+    26: "oci", 27: "oci", 28: "oci",
+    29: "custom", 30: "custom", 31: "custom",
+}
+
+
+def _export_accounts(client) -> list[dict]:
+    """Export cloud accounts. The read API exposes project_id and payer_id, so
+    accounts can be re-attached to the copied project + billing source. Real cloud
+    linkage (credentials/access) is not migrated; import recreates shells with
+    access checking off (see import). Accounts whose billing source can't be
+    recreated (azure/gcp/anthropic) are skipped on import via the payer dependency.
+    """
+    accts = client.get("/v3/account") or []
+    out = []
+    for a in accts:
+        out.append(
+            {
+                "source_id": a.get("id"),
+                "account_number": a.get("account_number"),
+                "account_name": a.get("account_name"),
+                "account_alias": a.get("account_alias"),
+                "account_type_id": a.get("account_type_id"),
+                "provider": ACCOUNT_PROVIDER.get(a.get("account_type_id"), "custom"),
+                "project_id": a.get("project_id"),
+                "payer_id": a.get("payer_id"),
+                "start_datecode": a.get("start_datecode"),
+                "linked_account_number": a.get("linked_account_number"),
+                "linked_role": a.get("linked_role"),
+                "include_linked_account_spend": a.get("include_linked_account_spend"),
+                "use_org_account_info": a.get("use_org_account_info"),
+            }
+        )
+    by_provider = {}
+    for a in out:
+        by_provider[a["provider"]] = by_provider.get(a["provider"], 0) + 1
+    print(f"  accounts: {len(out)} {by_provider}")
+    return out
 
 
 # Maps the type-specific key in a /v4/billing-source record to a short type name.

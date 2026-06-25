@@ -137,11 +137,22 @@ def _missing_budget_months(budget: dict) -> list[str]:
 # ---------------------------------------------------------------------------
 
 ACTIONS = ("ok", "adopt", "create", "recreate")
-KINDS = ("billing_sources", "ous", "funding_sources", "projects", "budgets", "scopes")
+KINDS = ("billing_sources", "ous", "funding_sources", "projects", "budgets",
+         "accounts", "scopes")
 
 # Billing source types that have an API create path (others can only be set up via
 # a provider flow / prerequisite entity and are skipped on import).
 BILLING_CREATABLE = {"custom", "aws", "oci"}
+
+# The read account_number holds a provider-specific identifier; map it to the field
+# each create endpoint expects.
+ACCOUNT_NUMBER_FIELD = {
+    "aws": "account_number",
+    "custom": "account_number",
+    "google-cloud": "google_cloud_project_id",
+    "azure": "subscription_uuid",
+    "oci": "tenancy_ocid",
+}
 
 
 class Importer:
@@ -171,6 +182,7 @@ class Importer:
         self._t_proj_by_id: dict = {}
         self._t_budget_cache: dict = {}  # budget scope-id -> {natural_key: budget_id}
         self._t_acct_by_number: dict = {}  # account_number -> target account id
+        self._t_acct_ids: set = set()
         self._t_scope_key: dict = {}       # (project_id, name) -> scope id
         self._t_scope_ids: set = set()
         self._t_billing_key: dict = {}     # name -> billing source id
@@ -293,6 +305,7 @@ class Importer:
         self._t_proj_key = {(p.get("ou_id"), nkey(p.get("name"))): p["id"] for p in projs}
 
         accts = self.client.get("/v3/account") or []
+        self._t_acct_ids = {a["id"] for a in accts}
         self._t_acct_by_number = {a.get("account_number"): a["id"]
                                   for a in accts if a.get("account_number")}
 
@@ -371,6 +384,7 @@ class Importer:
         self._reconcile_funding_sources()
         self._reconcile_projects()
         self._reconcile_budgets()
+        self._reconcile_accounts()
         self._reconcile_scopes()
         self._summary()
         return self.id_map
@@ -781,6 +795,68 @@ class Importer:
             else:
                 self._diagnose_budget_failure(b, label, oversub)
 
+    # -- accounts ---------------------------------------------------------
+    def _reconcile_accounts(self):
+        print("\nAccounts:")
+        for a in self.snapshot.get("accounts", []):
+            src = a.get("source_id")
+            num = a.get("account_number")
+            label = f"account '{a.get('account_name') or num}' ({a.get('provider')})"
+
+            mapped = self.id_map["accounts"].get(str(src))
+            if mapped is not None and mapped in self._t_acct_ids:
+                self._note_ok("accounts", label)
+                continue
+            if num and num in self._t_acct_by_number:
+                found = self._t_acct_by_number[num]
+                self.id_map["accounts"][str(src)] = found
+                self.counts["accounts"]["adopt"] += 1
+                print(f"  = adopt {label} (existing id {found})")
+                continue
+
+            proj_new = self.id_map["projects"].get(str(a.get("project_id")))
+            if proj_new is None:
+                self.warnings.append(f"{label}: project {a.get('project_id')} unresolved, skipped")
+                self.skipped["accounts"] += 1
+                continue
+            payer_new = self.id_map["billing_sources"].get(str(a.get("payer_id")))
+            if payer_new is None:
+                self.warnings.append(
+                    f"{label}: billing source {a.get('payer_id')} not on target "
+                    f"(its type wasn't recreatable), skipped")
+                self.skipped["accounts"] += 1
+                continue
+
+            provider = a.get("provider") or "custom"
+            num_field = ACCOUNT_NUMBER_FIELD.get(provider, "account_number")
+            action = "recreate" if mapped is not None else "create"
+            payload = {
+                num_field: num,
+                "account_name": a.get("account_name"),
+                "project_id": proj_new,
+                "payer_id": payer_new,
+                "start_datecode": a.get("start_datecode"),
+            }
+            if a.get("account_alias"):
+                payload["account_alias"] = a["account_alias"]
+            if provider != "custom":  # the custom create endpoint rejects account_type_id
+                payload["account_type_id"] = a.get("account_type_id")
+            if provider in ("aws", "azure", "google-cloud"):
+                payload["skip_access_checking"] = True
+            if provider == "aws" and a.get("linked_account_number"):
+                # required for linked AWS accounts (e.g. GovCloud paired to a commercial account)
+                payload["linked_aws_account_number"] = a["linked_account_number"]
+                if a.get("include_linked_account_spend") is not None:
+                    payload["include_linked_account_spend"] = a["include_linked_account_spend"]
+
+            new_id = self._post("accounts", f"/v3/account?account-type={provider}",
+                                payload, src, action, label)
+            if new_id is not None:
+                self.id_map["accounts"][str(src)] = new_id
+                if num:  # let scopes (which run next) resolve this account by number
+                    self._t_acct_by_number[num] = new_id
+                    self._t_acct_ids.add(new_id)
+
     # -- scopes -----------------------------------------------------------
     def _reconcile_scopes(self):
         print("\nScopes:")
@@ -839,6 +915,11 @@ class Importer:
             new_id = self._post("scopes", "/beta/scope", payload, src, action, label)
             if new_id is not None:
                 self.id_map["scopes"][str(src)] = new_id
+            elif self._last_error and "Invalid scope criteria" in (self._last_error.body or ""):
+                self.warnings.append(
+                    f"{label}: → cause: a condition references a tag key / region / "
+                    f"service the target hasn't ingested billing data for "
+                    f"(create only succeeds once that data exists on the target)")
 
     # -- summary ----------------------------------------------------------
     def _note_ok(self, kind: str, label: str):
@@ -876,11 +957,19 @@ class Importer:
                 print(f"    ~ {d}", file=sys.stderr)
             if len(self.drift) > 50:
                 print(f"    ... and {len(self.drift) - 50} more", file=sys.stderr)
-        if self.warnings:
-            print(f"\n  Warnings ({len(self.warnings)}):", file=sys.stderr)
-            for w in self.warnings[:50]:
+        # Failures (and their cause lines) are few and important — always show them
+        # in full, ahead of the higher-volume skip/info warnings.
+        failures = [w for w in self.warnings if "failed:" in w or "→ cause:" in w]
+        others = [w for w in self.warnings if w not in failures]
+        if failures:
+            print(f"\n  Failures ({len(failures)}):", file=sys.stderr)
+            for w in failures:
                 print(f"    - {w}", file=sys.stderr)
-            if len(self.warnings) > 50:
-                print(f"    ... and {len(self.warnings) - 50} more", file=sys.stderr)
+        if others:
+            print(f"\n  Warnings ({len(others)}):", file=sys.stderr)
+            for w in others[:50]:
+                print(f"    - {w}", file=sys.stderr)
+            if len(others) > 50:
+                print(f"    ... and {len(others) - 50} more", file=sys.stderr)
         if not self.apply:
             print("\n  Plan only. Re-run with --apply to make these changes.")

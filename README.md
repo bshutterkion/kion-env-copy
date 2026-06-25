@@ -1,9 +1,9 @@
 # Kion environment copy
 
 Copy a Kion install's **billing sources, OUs, funding sources, projects, budgets,
-and scopes** to another install. The two installs have different numeric ids, so
-the tool stores cross-references (permission schemes, owners, accounts) **by name /
-stable key** and rebuilds the id links on import.
+cloud accounts, and scopes** to another install. The two installs have different
+numeric ids, so the tool stores cross-references (permission schemes, owners,
+accounts) **by name / stable key** and rebuilds the id links on import.
 
 ## How it works
 
@@ -31,7 +31,7 @@ snapshot against the target's current state and only acts on the difference, so
   at a target that already contains the environment yields **zero creates instead
   of duplicates** — even with no state file.
 - **Dependency order**: billing sources → OUs (parents first) → funding sources →
-  projects → budgets → scopes.
+  projects → budgets → accounts → scopes.
 - **Permission schemes** match by name, else the stock per-type default scheme,
   else `DEFAULT_PERMISSION_SCHEME_ID`.
 - **Owners** match by email / group name; missing ones are dropped.
@@ -115,12 +115,23 @@ live install — several fields that `POST` requires are not returned by `GET`):
   the customer replaces on the target. Only **custom, AWS, and OCI** have an API
   create path; **GCP, Azure, and Anthropic** are exported but skipped (they require
   a prerequisite service account or a provider registration flow). Adopted by name.
+- **Cloud accounts** copy as **shells** (like billing sources). The read API
+  exposes `project_id` and `payer_id`, so accounts re-attach to the copied project
+  and billing source; real cloud linkage/credentials aren't migrated, so import
+  creates them with **access checking off** and placeholder linkage. An account is
+  recreated only when its **billing source could be recreated** (custom / AWS /
+  OCI); accounts on a skipped billing source (Azure / GCP / Anthropic) are skipped.
+  The read `account_number` is mapped to the right create field per provider
+  (`account_number` for AWS/custom, `google_cloud_project_id` for GCP,
+  `subscription_uuid` for Azure, `tenancy_ocid` for OCI). Adopted by account number.
 - **Scopes** (`/beta/scope`, project cost-allocation rules) copy with their
   name/dates and resource/tag/logic criteria. Their **account criteria are remapped
-  by `account_number`**; accounts missing on the target are dropped. Because Kion
-  requires every scope to reference **at least one existing account**, a scope is
-  **skipped** if none of its accounts exist on the target — so set up cloud accounts
-  on the target before expecting scopes to import.
+  by `account_number`** (now resolvable thanks to account copy); accounts missing on
+  the target are dropped. Because Kion requires every scope to reference **at least
+  one existing account**, a scope is **skipped** if none of its accounts exist.
+  Scope *conditions* are also validated against the target's ingested billing data,
+  so a scope whose condition references a **tag key / region / service** the target
+  hasn't seen is **reported as failed** with that cause named.
 
 ### Owners and permission schemes
 
