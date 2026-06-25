@@ -1,0 +1,10 @@
+# Secrets and generated artifacts — never commit these
+.env
+.env.*
+!.env.example
+snapshot*.json
+id-map*.json
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
