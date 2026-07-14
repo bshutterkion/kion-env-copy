@@ -16,70 +16,20 @@ scope:
 
 # ---------------------------------------------------------------------------
 # Onboarded resources (49-resource metadata sweep, feature/engine-onboard-resources).
-# Source: .superpowers/onboard/proposals/*.json. Resources with no reference
-# fields (app_api_key, app_role, azure_arm_template, azure_policy, cft,
-# compliance_program, custom_variable, idms, idms_open_id, service_control_policy,
-# webhook) have no entry here -- only natural_keys.yaml. Owner fields
-# (owner_user_ids/owner_user_group_ids and similar) are deliberately NOT
-# modeled as references; they are resolved via the separate resolve_owners()
-# email/name convention documented in CLAUDE.md, not the id->natural-key path.
+# Source: .superpowers/onboard/proposals/*.json. ONLY resources classified
+# "generic" are listed here -- see kion/meta/natural_keys.yaml's matching
+# banner and docs/ONBOARDING_REPORT.md for why the "hook"/"read_transform"
+# resources' references live in kion/meta/references.staged.yaml instead.
+# Of the 9 generic resources, billing_rule, category, compliance_family, and
+# compliance_level have reference fields; the rest (app_api_key, app_role,
+# compliance_program, idms, webhook) have none and so get no entry here, same
+# convention as the original file.
 # ---------------------------------------------------------------------------
-ami:
-  - {field: account_id, target: account, key: account_number, optional: false}
-azure_role:
-  - {field: car_restricted_user_ids, target: user, key: name, many: true, optional: true}
-  - {field: car_restricted_user_group_ids, target: user_group, key: name, many: true, optional: true}
 billing_rule:
   - {field: billing_source_ids, target: billing_source, key: name, many: true, optional: false}
 category:
   - {field: payer_id, target: billing_source, key: name, optional: true}
-cloud_rule:
-  - {field: ou_ids, target: ou, key: name, many: true, optional: true}
-  - {field: project_ids, target: project, key: name, many: true, optional: true}
-  - {field: post_webhook_id, target: webhook, key: name, optional: true}
-  - {field: pre_webhook_id, target: webhook, key: name, optional: true}
-  - {field: azure_arm_template_definition_ids, target: azure_arm_template, key: name, many: true, optional: true}
-  - {field: azure_policy_definition_ids, target: azure_policy, key: name, many: true, optional: true}
-  - {field: azure_role_definition_ids, target: azure_role, key: name, many: true, optional: true}
-  - {field: cft_ids, target: cft, key: name, many: true, optional: true}
-  - {field: compliance_standard_ids, target: compliance_standard, key: name, many: true, optional: true}
-  - {field: gcp_iam_role_ids, target: gcp_iam_role, key: name, many: true, optional: true}
-  - {field: iam_policy_ids, target: iam_policy, key: name, many: true, optional: true}
-  - {field: internal_ami_ids, target: ami, key: name, many: true, optional: true}
-  - {field: internal_portfolio_ids, target: service_catalog, key: name, many: true, optional: true}
-  - {field: service_control_policy_ids, target: service_control_policy, key: name, many: true, optional: true}
-compliance_control:
-  - {field: compliance_family_id, target: compliance_family, key: name, optional: true}
-  - {field: compliance_check_ids, target: compliance_check, key: name, many: true, optional: true}
-  - {field: aws_cloudformation_policy_ids, target: cft, key: name, many: true, optional: true}
-  - {field: azure_policy_definition_ids, target: azure_policy, key: name, many: true, optional: true}
-  - {field: arm_template_definition_ids, target: azure_arm_template, key: name, many: true, optional: true}
-  - {field: cloud_provider_policy_ids, target: iam_policy, key: name, many: true, optional: true}
 compliance_family:
   - {field: compliance_program_id, target: compliance_program, key: name, optional: false}
 compliance_level:
   - {field: compliance_program_id, target: compliance_program, key: name, optional: false}
-compliance_standard:
-  - {field: cloud_rule_id, target: cloud_rule, key: name, optional: true}
-  - {field: compliance_check_ids, target: compliance_check, key: name, many: true, optional: true}
-iam_policy:
-  - {field: car_restricted_user_ids, target: user, key: email, many: true, optional: true}
-  - {field: car_restricted_user_group_ids, target: user_group, key: name, many: true, optional: true}
-ou_cloud_access_role:
-  - {field: ou_id, target: ou, key: name, optional: false}
-  - {field: user_ids, target: user, key: name, many: true, optional: true}
-  - {field: user_group_ids, target: user_group, key: name, many: true, optional: true}
-ou_note:
-  - {field: ou_id, target: ou, key: name, optional: false}
-project_cloud_access_role:
-  - {field: project_id, target: project, key: name, optional: false}
-  - {field: account_ids, target: account, key: account_number, many: true, optional: true}
-project_note:
-  - {field: project_id, target: project, key: name, optional: true}
-service_catalog:
-  - {field: account_id, target: account, key: account_number, optional: false}
-user:
-  - {field: idms_id, target: idms, key: name, optional: false}
-  - {field: user_group_ids, target: user_group, key: name, many: true, optional: true}
-user_group:
-  - {field: idms_id, target: idms, key: name, optional: false}

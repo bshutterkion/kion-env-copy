@@ -9,13 +9,16 @@ scope:          {kind: name_in_parent, parent_field: project_id}
 # ---------------------------------------------------------------------------
 # Onboarded resources (49-resource metadata sweep, feature/engine-onboard-resources).
 # Source: .superpowers/onboard/proposals/*.json (one proposal per resource).
-# These entries make the resources' identity known to the engine; the ones
-# classified "hook" or "read_transform" below still need a build_create_payload
-# / reader hook in kion/overrides/registry.py (or an inventory reader) before
-# they can actually be reconciled end-to-end -- see docs/ONBOARDING_REPORT.md
-# for the per-resource classification and hook_sketch worklist. Adding the
-# natural key now lets tests validate the metadata is well-formed ahead of
-# that implementation phase.
+# ONLY resources classified "generic" are listed here -- they're copyable via
+# the existing metadata-driven engine alone (natural key + references.yaml
+# remap, no bespoke code) and are therefore safe for a live `--engine` run
+# today. The 21 "hook" + 1 "read_transform" resources from the same sweep have
+# NO hook registered in kion/overrides/registry.py yet, so their metadata
+# lives in kion/meta/natural_keys.staged.yaml instead -- adding them here
+# would make engine_meta() treat them as engine-ready and the generic
+# reconcile path would mis-copy them (unmapped owners, dropped type-specific
+# nesting, wrong payload shape). See docs/ONBOARDING_REPORT.md for the full
+# classification table and the staged worklist.
 # ---------------------------------------------------------------------------
 
 # -- classification: generic (copyable by the existing metadata-driven path) --
@@ -28,29 +31,3 @@ compliance_level:    {kind: name_in_parent, parent_field: compliance_program_id}
 compliance_program:  {kind: name}
 idms:                {kind: name}
 webhook:             {kind: name}
-
-# -- classification: hook (needs a build_create_payload hook -- see report) --
-ami:                       {kind: name_in_parent, parent_field: account_id}
-azure_arm_template:        {kind: name}
-azure_policy:              {kind: name}
-azure_role:                {kind: name}
-cft:                       {kind: name}
-cloud_rule:                {kind: name}
-compliance_check:          {kind: name}
-compliance_control:        {kind: name}
-compliance_standard:       {kind: name}
-custom_variable:           {kind: name}
-gcp_iam_role:              {kind: name}
-iam_policy:                {kind: name}
-idms_open_id:              {kind: name}
-ou_cloud_access_role:      {kind: name_in_parent, parent_field: ou_id}
-ou_note:                   {kind: name_in_parent, parent_field: ou_id}
-project_cloud_access_role: {kind: name_in_parent, parent_field: project_id}
-project_note:              {kind: name_in_parent, parent_field: project_id}
-service_catalog:           {kind: name_in_parent, parent_field: account_id}
-service_control_policy:    {kind: name}
-user_group:                {kind: name}
-
-# -- classification: read_transform (needs a bespoke inventory reader to    --
-# -- synthesize an identity field before the generic natural_key() applies) --
-user: {kind: name}   # identity field is synthesized as name := username by the reader hook

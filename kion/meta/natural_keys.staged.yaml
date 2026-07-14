@@ -1,0 +1,49 @@
+# ---------------------------------------------------------------------------
+# STAGED metadata -- NOT loaded by kion/meta/load.py or kion/engine/setup.py's
+# engine_meta(). This file is inert on purpose: every resource below is
+# classified "hook" or "read_transform" (49-resource metadata sweep,
+# feature/engine-onboard-resources) and has NO build_create_payload / reader
+# hook registered in kion/overrides/registry.py yet. Loading these into the
+# active kion/meta/natural_keys.yaml would make engine_meta() treat them as
+# engine-ready, and a live `--engine` run would fall through to the generic
+# reconcile path (kion/engine/reconcile.py's fields-minus-ignores + plain
+# reference remap) and mis-copy them -- unmapped owner ids, dropped
+# type-specific nesting (e.g. permission_scheme's exploded roles shape), or
+# an outright create failure on unresolved required fields.
+#
+# This file exists purely to carry the already-analyzed natural-key specs
+# forward to the future hook-implementation pass so that work doesn't have to
+# re-derive them. Once a resource's hook lands in
+# kion/overrides/registry.py (or kion/engine/inventory.py for `user`'s
+# read_transform), move its entry from here into kion/meta/natural_keys.yaml.
+#
+# See docs/ONBOARDING_REPORT.md for the full classification table and the
+# per-resource hook_sketch worklist (one section per resource below, keyed by
+# resource name).
+# ---------------------------------------------------------------------------
+
+# -- classification: hook — see ONBOARDING_REPORT.md --
+ami:                       {kind: name_in_parent, parent_field: account_id}   # hook sketch: ONBOARDING_REPORT.md "### `ami` (hook)"
+azure_arm_template:        {kind: name}   # hook sketch: ONBOARDING_REPORT.md "### `azure_arm_template` (hook)"
+azure_policy:              {kind: name}   # hook sketch: ONBOARDING_REPORT.md "### `azure_policy` (hook)"
+azure_role:                {kind: name}   # hook sketch: ONBOARDING_REPORT.md "### `azure_role` (hook)"
+cft:                       {kind: name}   # hook sketch: ONBOARDING_REPORT.md "### `cft` (hook)"
+cloud_rule:                {kind: name}   # hook sketch: ONBOARDING_REPORT.md "### `cloud_rule` (hook)"
+compliance_check:          {kind: name}   # hook sketch: ONBOARDING_REPORT.md "### `compliance_check` (hook)"
+compliance_control:        {kind: name}   # hook sketch: ONBOARDING_REPORT.md "### `compliance_control` (hook)"
+compliance_standard:       {kind: name}   # hook sketch: ONBOARDING_REPORT.md "### `compliance_standard` (hook)"
+custom_variable:           {kind: name}   # hook sketch: ONBOARDING_REPORT.md "### `custom_variable` (hook)"
+gcp_iam_role:              {kind: name}   # hook sketch: ONBOARDING_REPORT.md "### `gcp_iam_role` (hook)"
+iam_policy:                {kind: name}   # hook sketch: ONBOARDING_REPORT.md "### `iam_policy` (hook)"
+idms_open_id:              {kind: name}   # hook sketch: ONBOARDING_REPORT.md "### `idms_open_id` (hook)"
+ou_cloud_access_role:      {kind: name_in_parent, parent_field: ou_id}        # hook sketch: ONBOARDING_REPORT.md "### `ou_cloud_access_role` (hook)"
+ou_note:                   {kind: name_in_parent, parent_field: ou_id}        # hook sketch: ONBOARDING_REPORT.md "### `ou_note` (hook)"
+permission_scheme:         {kind: name}   # hook sketch: ONBOARDING_REPORT.md "### `permission_scheme` (hook)" -- blended archetype, roles field needs read/create reshape + app_role id remap
+project_cloud_access_role: {kind: name_in_parent, parent_field: project_id}   # hook sketch: ONBOARDING_REPORT.md "### `project_cloud_access_role` (hook)"
+project_note:              {kind: name_in_parent, parent_field: project_id}   # hook sketch: ONBOARDING_REPORT.md "### `project_note` (hook)"
+service_catalog:           {kind: name_in_parent, parent_field: account_id}   # hook sketch: ONBOARDING_REPORT.md "### `service_catalog` (hook)"
+service_control_policy:    {kind: name}   # hook sketch: ONBOARDING_REPORT.md "### `service_control_policy` (hook)"
+user_group:                {kind: name}   # hook sketch: ONBOARDING_REPORT.md "### `user_group` (hook)"
+
+# -- classification: read_transform — see ONBOARDING_REPORT.md --
+user: {kind: name}   # hook sketch: ONBOARDING_REPORT.md "### `user` (read_transform)" -- identity field synthesized as name := username by a reader hook

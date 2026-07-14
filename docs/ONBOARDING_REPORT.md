@@ -1,81 +1,154 @@
 # Resource Onboarding Report — metadata sweep (feature/engine-onboard-resources)
 
-Source: `.superpowers/onboard/proposals/*.json`, one proposal file per candidate
-resource, each produced by an earlier analysis pass over
+## Status (corrective pass)
+
+This report was corrected after an initial sweep left a safety gap: it added
+`natural_keys.yaml`/`references.yaml` entries for **all** 30 non-skip
+resources it analyzed, which made every one of them appear in
+`engine_meta()`'s active `--engine` resource set — but only the resources
+classified **generic** are actually safe to reconcile that way today (see
+"Why the safety gate exists" below). This corrective pass (1) analyzed the 3
+resources the original sweep failed to produce a proposal for
+(`permission_scheme`, `project_cloud_access_role_exemption`,
+`project_enforcement`), bringing the total from 46 to the intended **49**, and
+(2) split the metadata into an ACTIVE set (safe for `--engine` today) and a
+STAGED set (metadata captured, but inert until a hook is implemented).
+
+| set | count | where | safe for `--engine` today? |
+|---|---|---|---|
+| **ACTIVE** | 9 generic (+ the original 7 = 16 engine-ready resources total) | `kion/meta/natural_keys.yaml`, `kion/meta/references.yaml` | **yes** |
+| **STAGED** | 21 hook + 1 read_transform = 22 | `kion/meta/natural_keys.staged.yaml`, `kion/meta/references.staged.yaml` (NOT loaded by `load.py`/`setup.py`) | **no** — needs a hook first |
+| **SKIP** | 18 | this report only (no metadata written anywhere) | n/a — not onboardable as-is |
+| **total** | **49** | | |
+
+The 9 ACTIVE generic resources: `app_api_key`, `app_role`, `billing_rule`,
+`category`, `compliance_family`, `compliance_level`, `compliance_program`,
+`idms`, `webhook`. Together with the original 7 (`billing_source`, `ou`,
+`funding_source`, `project`, `budget`, `account`, `scope`) these are the full
+16-resource set a live `--engine` run walks today.
+
+Source: `.superpowers/onboard/proposals/*.json`, one proposal file per
+candidate resource, each produced by an analysis pass over
 `kion/meta/vendor/generator_config.yaml`, `crud_archetypes.yaml`, and
 `memberships.yaml` plus (where available) live-API verification notes. This
-report synthesizes those 46 proposals into `kion/meta/natural_keys.yaml` and
-`kion/meta/references.yaml`.
+report synthesizes those 49 proposals into the active + staged metadata files
+above.
 
-**Note on the count**: the task that produced this report referred to "49 Kion
-provider resources," but `.superpowers/onboard/proposals/` contains exactly
-**46** proposal files (verified: `ls .superpowers/onboard/proposals/*.json | wc -l`
-returns 46, and the classification tally below sums to 46). This report and the
-metadata changes cover all 46 that exist; there is no 47th-49th proposal to
-synthesize.
+**Note on the count**: an earlier version of this report noted the task
+description referred to "49 Kion provider resources" while only 46 proposal
+files existed. That gap is now closed: `permission_scheme`,
+`project_cloud_access_role_exemption`, and `project_enforcement` were
+analyzed in this corrective pass (see their sections below), bringing
+`.superpowers/onboard/proposals/*.json` to exactly **49** files
+(`ls .superpowers/onboard/proposals/*.json | wc -l` → 49).
 
 ## Classification summary
 
 | classification | count | meaning |
 |---|---|---|
-| generic | 9 | copyable via the existing metadata-driven engine alone (natural key + `references.yaml` remap, no bespoke code) |
-| hook | 20 | needs a `build_create_payload` (and often a paired export-side owner/email capture) hook in `kion/overrides/registry.py` before it can be reconciled correctly |
-| read_transform | 1 | needs a bespoke inventory reader to synthesize an identity field before the generic `natural_key()` applies (`user`: `name := username`) |
-| skip | 16 | not onboardable as-is -- no natural key expressible in the engine's 4 supported kinds (`name`, `name_in_parent`, `account_number`, `date_range`), out of scope per CLAUDE.md, or needs a new engine mechanism (e.g. `no_read`/`association`/`parent_list` archetypes have no generic reconcile path today) |
-| **total** | **46** | |
+| generic | 9 | copyable via the existing metadata-driven engine alone (natural key + `references.yaml` remap, no bespoke code) — **ACTIVE** |
+| hook | 21 | needs a `build_create_payload` (and often a paired export-side owner/email capture) hook in `kion/overrides/registry.py` before it can be reconciled correctly — **STAGED** |
+| read_transform | 1 | needs a bespoke inventory reader to synthesize an identity field before the generic `natural_key()` applies (`user`: `name := username`) — **STAGED** |
+| skip | 18 | not onboardable as-is -- no natural key expressible in the engine's 4 supported kinds (`name`, `name_in_parent`, `account_number`, `date_range`), out of scope per CLAUDE.md, or needs a new engine mechanism (e.g. `no_read`/`association`/`parent_list` archetypes have no generic reconcile path today) |
+| **total** | **49** | |
 
-## What this sweep changed
+## Why the safety gate exists
 
-- `kion/meta/natural_keys.yaml`: appended natural-key entries for all 30
-  non-skip resources (9 generic + 20 hook + 1 read_transform), under a new
-  comment banner. The original 7 entries (billing_source, ou, funding_source,
-  project, budget, account, scope) are untouched.
-- `kion/meta/references.yaml`: appended reference entries for the resources
-  that have at least one FK field pointing at another resource (see the
-  `#refs` column below), matching the existing `{field, target, key, many,
-  optional}` block-list format. Resources with zero references (e.g.
-  `app_api_key`, `azure_arm_template`, `compliance_check`) get no entry, same
-  convention as the original file. Owner fields
-  (`owner_user_ids`/`owner_user_group_ids` and similar, e.g.
-  `car_restricted_user_ids`) are **not** modeled as references anywhere -- per
-  CLAUDE.md and the existing `resolve_owners()` convention, they're resolved
-  by email/name, not by the id->natural-key reference path.
+`engine_meta()` (`kion/engine/setup.py`) builds the active `--engine` resource
+set as `{r for r in meta if r in nkeys}` — i.e. *any* resource with a
+`natural_keys.yaml` entry is treated as engine-ready and gets walked by
+`kion_copy.py --engine`'s `build_inventory()`/`EngineReconciler`. For the 9
+**generic** resources that's the whole story: their create payload is exactly
+"fields minus ignores, references remapped by natural key," which is precisely
+what the generic reconcile path in `kion/engine/reconcile.py` does — no
+bespoke code needed, so they're correctly and safely reconcilable today.
+
+For the 21 **hook** and 1 **read_transform** resources, no hook is registered
+for them in `kion/overrides/registry.py` (or a reader in
+`kion/engine/inventory.py` for `user`), so the *same* generic reconcile path
+would still run if their metadata were active — but it does not know how to
+resolve owner emails, reshape nested/exploded fields (e.g.
+`permission_scheme`'s `roles`), drop out-of-scope FK fields, or synthesize an
+identity field (`user`'s `name := username`). Left active, a live `--engine`
+run against them would produce incomplete/wrong payloads (unmapped owner ids,
+dropped type-specific nesting) or fail outright on unresolved required
+fields. That is exactly what this corrective pass gates out: their
+`natural_keys.yaml`/`references.yaml` entries were moved to
+`kion/meta/natural_keys.staged.yaml`/`kion/meta/references.staged.yaml` —
+files `kion/meta/load.py` and `kion/engine/setup.py` never read (verified: the
+loaders open the literal filenames `natural_keys.yaml`/`references.yaml`, no
+directory glob) — so they keep the already-completed identity/reference
+analysis available for the next phase without being live today. This matches
+this repo's own established precedent of metadata-then-hook as a two-phase
+pattern (see `kion/engine/reconcile.py`'s docstring on `account`'s hook
+landing before billing_source/budget/scope's did).
+
+## What this sweep + corrective pass changed
+
+- `kion/meta/natural_keys.yaml` / `kion/meta/references.yaml`: contain
+  **only** the original 7 entries plus the 9 **generic** resources. The
+  hook/read_transform entries the original sweep appended here were removed
+  and moved to the staged files (see below) — this is the corrective pass's
+  core change.
+- `kion/meta/natural_keys.staged.yaml` / `kion/meta/references.staged.yaml`
+  (**new**): hold the natural-key + reference entries for the 21 hook + 1
+  read_transform resources, each annotated with a `# classification:
+  hook|read_transform — see ONBOARDING_REPORT.md` pointer comment. Header
+  comments in both files explain they are inert until a hook lands. Resources
+  with zero references (e.g. `app_api_key`, `azure_arm_template`,
+  `compliance_check`) still get no `references.*yaml` entry, same convention
+  as the original file. Owner fields (`owner_user_ids`/`owner_user_group_ids`
+  and similar, e.g. `car_restricted_user_ids`) are **not** modeled as
+  references anywhere -- per CLAUDE.md and the existing `resolve_owners()`
+  convention, they're resolved by email/name, not by the id->natural-key
+  reference path.
 - `kion/meta/load.py` `READ_OVERRIDES`: **no changes**. All 30 non-skip
-  resources already have a complete `read_path`/`read_method` in the vendored
-  `generator_config.yaml` (verified by loading `load_resource_meta()` and
-  checking every onboarded resource resolves a non-null `read_path`) -- Step 2
-  of the task was a no-op for this batch.
-- `tests/test_meta_load.py`: the resource set returned by `engine_meta()` is
-  the intersection `{r for r in ResourceMeta if r in natural_keys}` -- which
-  this sweep just grew from 7 to 37. The existing test asserting exactly the
-  original 7 was updated (not deleted) to assert the new, larger, itemized
-  set, so it keeps documenting the resource-set contract rather than going
-  stale.
-- `tests/test_onboarded_metadata.py` (new): parametrized structural guard --
-  every non-skip resource has a `natural_keys.yaml` entry, a
-  `load_resource_meta()` entry with a `read_path`, a `parent_field` when its
-  kind is `name_in_parent`, and every `references.yaml` target name is itself
-  a known resource.
+  resources from the original sweep already have a complete
+  `read_path`/`read_method` in the vendored `generator_config.yaml` (verified
+  by loading `load_resource_meta()` and checking every onboarded resource
+  resolves a non-null `read_path`) — Step 2 of the task was a no-op for this
+  batch, and the 3 newly-analyzed resources (`permission_scheme`,
+  `project_cloud_access_role_exemption`, `project_enforcement`) likewise
+  resolve a `read_path` from the vendored config with no override needed.
+- `tests/test_meta_load.py`: `ONBOARDED_HOOK`/`ONBOARDED_READ_TRANSFORM` were
+  replaced with `STAGED_HOOK`/`STAGED_READ_TRANSFORM`, and
+  `test_engine_meta_returns_the_onboarded_resources` now asserts the active
+  set is exactly the original 7 + the 9 generic resources (**not** the staged
+  ones). A new `test_no_staged_hook_or_read_transform_resource_is_active` test
+  asserts none of the 22 staged resources ever appear in `engine_meta()`'s
+  active `resources` list.
+- `tests/test_onboarded_metadata.py`: reworked so generic resources are
+  asserted to be in the ACTIVE files (and absent from staged), and
+  hook/read_transform resources are asserted to be in the STAGED files (and
+  absent from active) — plus the same `engine_meta()`-active-set safety guard,
+  a `read_path` check, a `parent_field` check for `name_in_parent` kinds, and
+  a references-target-is-known-resource check (now checking staged targets
+  against the active+staged union, since a staged resource's reference may
+  point at another staged resource that isn't active yet either). A new
+  `test_proposal_count_and_classification_tally_matches_49` locks in the
+  corrected 49-resource, 4-way tally.
 
-## Important: metadata alone does not make the 20 hook / 1 read_transform resources safe for a live `--engine` run yet
+## Important: metadata alone does not make the 21 hook / 1 read_transform resources safe for a live `--engine` run yet
 
-Adding a `natural_keys.yaml` entry is what makes a resource appear in
+See "Status (corrective pass)" and "Why the safety gate exists" at the top of
+this report for the full explanation and the ACTIVE/STAGED/SKIP counts. Short
+version: adding a `natural_keys.yaml` entry is what makes a resource appear in
 `engine_meta()`'s `resources` set, which is what `kion_copy.py --engine` feeds
 into `build_inventory()`/`EngineReconciler`. For the 9 **generic** resources
-that's the whole story -- they're correctly and safely reconcilable right now.
-For the 20 **hook** and 1 **read_transform** resources, `kion/engine/reconcile.py`'s
-generic path (`to_target_ids` + fields-minus-ignores) is still what would run
-today because no hook is registered for them in `kion/overrides/registry.py` --
-so until their hooks land (next phase), a live `--engine` run against them
-would either produce incomplete/wrong payloads (unmapped owner ids, dropped
-type-specific nesting, etc.) or fail outright on unresolved required fields.
-This sweep intentionally captures their metadata now (per the task) without
-implementing those hooks, matching this repo's own precedent -- see
-`kion/engine/reconcile.py`'s docstring, which already documents that "only
-`account` has a hook so far (billing_source/budget/scope hooks land in Task
-10)" -- i.e. metadata-then-hook is an established two-phase pattern here, not
-a new risk introduced by this sweep. The implement-phase worklist below is
-exactly these 21 resources.
+that's the whole story -- they're correctly and safely reconcilable right now,
+and their metadata is ACTIVE. For the 21 **hook** and 1 **read_transform**
+resources, no hook is registered for them in `kion/overrides/registry.py`
+(or a reader in `kion/engine/inventory.py` for `user`) -- so their metadata is
+now STAGED (`kion/meta/natural_keys.staged.yaml` /
+`kion/meta/references.staged.yaml`, not loaded by `load.py`/`setup.py`)
+instead of active, specifically to prevent the incomplete/wrong payloads
+(unmapped owner ids, dropped type-specific nesting, etc.) or outright create
+failures a live `--engine` run against them would otherwise produce. This
+matches this repo's own precedent of metadata-then-hook as a two-phase
+pattern -- see `kion/engine/reconcile.py`'s docstring, which already documents
+that "only `account` has a hook so far (billing_source/budget/scope hooks
+land in Task 10)." The implement-phase worklist below is exactly these 22
+staged resources.
 
 ## Full resource table
 
@@ -117,7 +190,10 @@ exactly these 21 resources.
 | `ou_enforcement` | skip | - | 2 | no | ou_enforcement has no name/business-identity field among its create_fields (cloud_rule_id, description, enabled, overburn, service_id, threshold, threshold_type, timeframe, trigger_planned_amount_type, ugroup_ids,... |
 | `ou_note` | hook | name_in_parent(ou_id) | 1 | yes | Standalone name_in_parent resource (name + ou_id) but the create payload has a required create_user_id (integer) field that identifies the note's author/creator by user id on the SOURCE install. Users are not a copied... |
 | `ou_permission_mapping` | skip | - | 0 | no | Not a candidate for this engine, on both policy and mechanical grounds. (1) CLAUDE.md's 'Out of scope' list explicitly names 'app-role permission mappings' as not copied. (2) The create/read op (PATCH/GET... |
+| `permission_scheme` | hook | name | 0 | yes | Natural key is trivially generic ({kind: name}, name required + unique) but crud_archetypes.yaml tags this 'kind: blended' with a DECLARED NESTED READ SHAPE: the private read returns permission_roles as {permission_id, role_ids[]}, exploded, vs the create body's flat 'roles' field -- the generic fields-minus-ignores path has no reshaping step, so roles cannot round-trip without a hook that also remaps role_ids to app_role... |
 | `project_cloud_access_role` | hook | name_in_parent(project_id) | 2 | yes | Identity fits a supported natural-key kind (name_in_parent under project_id, same pattern as scope) and the CRUD archetype is plain entity (real by-id GET, not in crud_archetypes.yaml so it defaults to 'entity'). But... |
+| `project_cloud_access_role_exemption` | skip | - | 2 | yes | Project-scoped sibling of ou_cloud_access_role_exemption (also skip): no name field among create_fields (id, ou_cloud_access_role_id, project_id, reason), crud_archetypes.yaml tags it 'kind: no_read' (no by-id GET, only a parent-scoped collection read), and its real identity is a compound (project_id, exempted-role-id) which none of the 4 supported natural_key kinds can express... |
+| `project_enforcement` | skip | - | 2 | no | Project-scoped sibling of ou_enforcement/funding_source_enforcement (also skip): no name/business-identity field among create_fields (amount_type, cloud_rule_id, description, notification_emails/frequency, overburn, service_id, spend_option, threshold, threshold_type, timeframe, ugroup_ids, user_ids); crud_archetypes.yaml tags it 'kind: parent_list' (opaque EnforcementID, no by-id GET); real identity is a compound (project parent, timeframe, threshold_type, ...) none of the 4 kinds express... |
 | `project_line_item` | skip | - | 4 | no | No usable identity. The create fields are amount, category_id, datecode, description, funding_source_id, payer_id, project_id — there is no name-like field at all, so {kind:name} and {kind:name_in_parent} are both out.... |
 | `project_note` | hook | name_in_parent(project_id) | 1 | yes | Structurally the project-scoped sibling of ou_note (already onboarded as 'hook'): same 4 create fields (create_user_id, name, project_id, text), same 'blended' archetype in crud_archetypes.yaml (typed public... |
 | `project_permission_mapping` | skip | - | 4 | no | This resource has no usable identity for any of the engine's four supported natural_key kinds (name, name_in_parent, account_number, date_range). Its real identity is the compound (project_id, app_role_id) — there is no... |
@@ -201,6 +277,10 @@ build_create_payload hook that: (1) copies name/ou_id (mapped via existing ou na
 
 build_create_payload hook: (1) resolve ou_id via the standard natural-key remap (same as project's ou_id reference) -- this part is generic; (2) override create_user_id with the target install's running-user id, fetched the same way import_.py already does for OU/project/funding_source owner fallback (GET /v3/app-api-key -> user_id), instead of copying the source install's create_user_id verbatim. text and name pass through unchanged.
 
+### `permission_scheme` (hook)
+
+build_create_payload hook: (1) name and type pass through unchanged (plain scalars, type is presumably a fixed enum stable across installs -- confirm live). (2) roles needs a bespoke read-side AND create-side transform: read must un-explode whatever GET /v3/permission-scheme/{id} actually returns (crud_archetypes.yaml says the underlying private read exposes permission_roles as {permission_id, role_ids[]} pairs -- UNVERIFIED whether the public by-id GET in the schema slice returns the same shape or the already-flat 'roles' the create body wants) into a portable record, translating role_ids (almost certainly app_role ids, since app_role is the only role-shaped resource this engine tracks) to app_role natural keys (app_role is already onboarded as generic with {kind: name}) the same way other hooks translate id-lists via ctx's reference-resolution helpers; permission_id is suspected to be a fixed built-in-permission catalog id stable across installs (analogous to account_type_id) and can likely pass through unchanged, but that must be confirmed against a live install before assuming it, since an install-local permission_id would need its own catalog-lookup, not a natural-key remap. (3) Because references.yaml's flat {field, target, key, many, optional} shape cannot express a reference nested inside an array of objects (roles is [{permission_id, role_ids[]}, ...], not a flat id or id-list field), this mapping cannot be added to references.yaml at all -- it must live entirely inside the hook, one more reason this can't be 'generic'. (4) No owner_user_ids/owner_user_group_ids or other owner fields exist on this resource per the schema slice, so no owner-fallback logic is needed. Note: this proposal only concerns permission_scheme as a copied resource in its own right and does not change the existing DEFAULT_PERMISSION_SCHEME_ID convention CLAUDE.md documents for OU/project/funding_source creates.
+
 ### `project_cloud_access_role` (hook)
 
 build_create_payload(fields, ctx): 1) resolve project_id via ctx's normal to_target_ids-style lookup (or ctx.id_map['project']) -- return None (skip) if unresolved, since project_id is required. 2) resolve account_ids (optional, many) the same way scope resolves account_numbers -- drop ids that don't match an existing/created target account, no warning needed (mirrors how scope treats missing accounts). 3) resolve user_ids/user_group_ids: at export time, capture the source user_ids as a portable user_emails list and user_group_ids as a portable user_group_names list (new export-side lookup against source /v3/user and /v3/user-group, analogous to how owner_user_emails/owner_user_group_names are already captured for OU/project/funding_source); on import, map those back to target ids via ctx.users (email->id) / ctx.groups (name->id) -- same dicts _index_ctx already builds -- and append a warning per name/email that doesn't resolve on the target (do NOT fall back to the current user the way resolve_owners does for owner_user_ids; an empty user_ids/user_group_ids list is a valid CAR, unlike OU/project/funding which reject zero owners). 4) pass through name, aws_iam_path, aws_iam_role_name, apply_to_all_accounts, future_accounts, long_term_access_keys, short_term_access_keys, web_access unchanged. 5) explicitly OMIT aws_iam_policies, aws_iam_permissions_boundary, azure_role_definitions, gcp_iam_roles, cloud_provider_ids from the payload and push one warning line per non-empty dropped field (e.g. "project cloud access role 'X': dropped aws_iam_policies (N entries) - not supported by this tool") so the plan/apply output makes the degradation visible instead of silent. Return (['/v3/project-cloud-access-role'], payload).
@@ -280,6 +360,14 @@ ou_enforcement has no name/business-identity field among its create_fields (clou
 
 Not a candidate for this engine, on both policy and mechanical grounds. (1) CLAUDE.md's 'Out of scope' list explicitly names 'app-role permission mappings' as not copied. (2) The create/read op (PATCH/GET /v3/ou/{id}/permission-mapping) operates on the FULL mapping collection for an OU in a single call — it is a bulk overwrite of every app_role_id→{user_ids,user_groups_ids} pair for that OU, not a per-record CRUD endpoint, so the schema slice's create_fields came back empty ({}) and there is no single-record shape to model. (3) Even if each mapping row were treated as its own entity, its identity is the compound pair (ou_id, app_role_id) — app_role_id is a foreign key, not a name string — which cannot be expressed by any of the 4 supported natural_key kinds in kion/engine/keys.py (name, name_in_parent [requires a literal `name` field], account_number, date_range). (4) The referenced entities on the far side — app_role (via app_role_id) and user/user_group (via user_ids/user_groups_ids) — are not resources this engine copies or exposes natural keys for (not in kion/meta/natural_keys.yaml), so reference translation has no target even if identity were solved. This matches the vendor archetype file's own treatment: ou_permission_mapping is tagged kind: association there (SDK-generator concept), which has no counterpart among this engine's supported natural-key kinds or archetypes (name / name_in_parent / account_number / date_range) and no analogous compound-key mechanism has been built into kion/engine/.
 
+### `project_cloud_access_role_exemption`
+
+This is the exact project-scoped sibling of `ou_cloud_access_role_exemption` (already onboarded as 'skip' in this sweep), and fails for the same two independent reasons. (1) No usable natural key: the create fields are only {id, ou_cloud_access_role_id, project_id, reason} -- there is no name/label field, and the record's real identity is the compound pair (project_id, the exempted cloud-access-role id), which none of the engine's 4 supported kinds (name, name_in_parent, account_number, date_range) can express (name_in_parent needs a literal `name` string within a parent, not a second FK). This matches crud_archetypes.yaml, which tags this exact resource `kind: no_read` -- there is no by-id or list-by-id GET; the only read (GET /v3/project/{id}/cloud-rule/exemption per the schema slice) is a collection nested under the parent project, i.e. compound-key-parent-read shaped, a mechanism keys.py does not support (only the 4 kinds above). (2) The FK it exempts against is `project_cloud_access_role` (onboarded this sweep as 'hook', not yet reconcilable), so even with a compound-key mechanism the reference target's ids would not be stable/resolvable until that hook lands. Schema note: the create_fields field is literally named `ou_cloud_access_role_id` even on this project-scoped endpoint (not `project_cloud_access_role_id`) -- copied verbatim from the schema slice, either genuine API field reuse or a swagger/codegen inconsistency; doesn't change the skip verdict.
+
+### `project_enforcement`
+
+`project_enforcement` is the project-scoped sibling of `ou_enforcement`/`funding_source_enforcement` (both already onboarded 'skip' in this sweep) and fails for the same structural reason: no name/business-identity field exists among its create_fields (amount_type, cloud_rule_id, description, notification_emails, notification_frequency, overburn, service_id, spend_option, threshold[required], threshold_type, timeframe[required], ugroup_ids, user_ids) -- none is a stable, human-assigned label. Per crud_archetypes.yaml it is archetype `parent_list` (parent_id_field: project_id, child_param: EnforcementID): records live under a project (GET/POST /v3/project/{id}/enforcement per the schema slice) and are individually addressed only by an opaque EnforcementID assigned on creation -- there is no by-id GET. Its real identity is a compound of (project parent, timeframe, threshold_type, and optionally cloud_rule_id/service_id/spend_option), since a project can legitimately have multiple enforcement rows sharing a timeframe if scoped to different cloud rules or services. None of keys.py's 4 supported kinds can express this compound identity, and a new kind must not be invented for this pass. Its one truly cross-resource field, cloud_rule_id, points at `cloud_rule`, which CLAUDE.md documents as explicitly out of scope for this tool -- so even a hook couldn't fully resolve every enforcement row. Note: user_ids/ugroup_ids are enforcement *notification recipients*, not object owners -- they must NOT feed the create-time owner-fallback-to-running-user logic used for OU/project/funding_source.
+
 ### `project_line_item`
 
 No usable identity. The create fields are amount, category_id, datecode, description, funding_source_id, payer_id, project_id — there is no name-like field at all, so {kind:name} and {kind:name_in_parent} are both out. {kind:account_number} obviously doesn't apply. {kind:date_range} requires start_datecode/end_datecode (as budget uses), but project_line_item only has a single `datecode` int, not a range, so that kind doesn't fit either. The record's real identity is a compound key — something like (project_id, funding_source_id, category_id, datecode) — which is not expressible with any of the 4 kinds keys.py supports (name, name_in_parent, account_number, date_range). Per the task instructions, a resource whose identity is a compound not expressible with those 4 kinds must be classified 'skip' rather than inventing a new natural_key kind.
@@ -291,3 +379,40 @@ This resource has no usable identity for any of the engine's four supported natu
 ### `saml_group_association`
 
 No usable identity: create fields are assertion_name, assertion_regex, idms_id, update_on_login, user_group_id -- there is no 'name' field, and the engine's only four natural_key kinds (name, name_in_parent, account_number, date_range) can't express this resource's real identity, which is compound: (idms_id, user_group_id, assertion_name/assertion_regex). name_in_parent doesn't fit either since there's no single 'name' string being scoped under a parent -- assertion_name and assertion_regex are alternative matcher fields, not a stable label. Separately, this resource has no plain list-read: the vendor generator config shows its only enumeration path is /v3/idms/{id}/group-association (nested under each idms record, i.e. a parent-scoped/compound-key read, same shape as the scope_criteria compound_key_parent_read archetype) -- this engine's snapshot walk only knows how to GET a flat list per entity, not fan out over a parent resource's children. On top of that, its two references are both to resources outside this engine's copied set: idms_id points at an Identity Management System (SAML/OIDC provider config -- a prerequisite/provider-registration resource, analogous to the explicitly-called-out gcp_service_account skip case) and user_group_id points at user_group, which is not one of the 7 entities this tool copies (out of scope per CLAUDE.md: org/financial structure only, not users/groups/permissions). Onboarding this resource would require (a) a new engine mechanism for parent-scoped enumeration, (b) a new natural-key kind for compound identities, and (c) bringing idms and user_group into scope as prerequisite entities first -- none of which exist today.
+
+
+## Live read smoke (active resources)
+
+Ran a throwaway, read-only script (not committed) against **demo1** (`.env.source`) that calls `engine_meta()` to get the ACTIVE resource set, then `build_inventory(client, meta, refs, nkeys, resources)` -- the exact same generic read path `kion_copy.py export` and `scripts/equivalence_check.py` use -- for all 16 active resources (the original 7 plus the 9 "generic" resources). No writes were made; `.env.source` was only ever read from.
+
+Result: **15 of 16 read cleanly with real data**; 2 of those 15 (`compliance_family`, `compliance_level`) returned 0 records each via a *caught*, non-fatal error rather than genuine emptiness -- flagged below, not silently dropped.
+
+| resource | result |
+|---|---|
+| account | ok — 102 records |
+| app_api_key | ok — 9 records |
+| app_role | ok — 75 records |
+| billing_rule | ok — 8 records |
+| billing_source | ok — 17 records |
+| budget | ok — 110 records |
+| category | ok — 1 record |
+| compliance_family | **flagged** — 0 records, list read returned HTTP 405 (see below) |
+| compliance_level | **flagged** — 0 records, list read returned HTTP 405 (see below) |
+| compliance_program | ok — 28 records |
+| funding_source | ok — 65 records |
+| idms | ok — 11 records |
+| ou | ok — 22 records |
+| project | ok — 36 records |
+| scope | ok — 9 records |
+| webhook | ok — 10 records |
+
+**Flag: `compliance_family` / `compliance_level` are not cleanly "generic" on this install.** Both are classified `generic` with a `{kind: name_in_parent, parent_field: compliance_program_id}` natural key -- that part of the classification is still structurally correct (mirrors `compliance_family`'s and `compliance_level`'s parent-scoping under `compliance_program`, same shape as `ou`/`project`). The problem is the *generic list-read mechanism* `build_inventory` uses for every non-bespoke resource: it derives the LIST endpoint by stripping `{id}` off `read_path` (`/v4/compliance/family/{id}` -> `GET /v4/compliance/family`, `/v4/compliance/level/{id}` -> `GET /v4/compliance/level`). Against demo1 both calls returned **HTTP 405** (method not allowed), printed as `! /v4/compliance/family list failed: 405` / `! /v4/compliance/level list failed: 405` on stderr. `kion/engine/inventory.py`'s `list_records(..., on_error=_on_read_error)` **catches** this and returns an empty list rather than raising -- so a live `--engine` run would not crash, but would silently believe demo1 has zero compliance families and zero compliance levels (a data-completeness gap, not a hard failure) and therefore skip copying any that actually exist. `compliance_program` itself, at the structurally identical `/v4/compliance/program` -> `/v4/compliance/program/{id}`, read cleanly (28 records) -- so this is specific to the two child resources, consistent with them actually being enumerated only in a parent-scoped shape (e.g. `GET /v4/compliance/program/{id}/family`) that the flat-list derivation doesn't reach, not a demo1 outage. Per this pass's constraints (no `import_.py`/`export.py`/`client.py` changes, no new engine mechanism), no code or metadata change is made here -- `compliance_family`/`compliance_level` are left in the active `natural_keys.yaml`/`references.yaml` exactly as inherited from the original sweep, since reclassifying them is a judgment call beyond this corrective pass's scope. This is recorded as an explicit, visible **follow-up**: before relying on `compliance_family`/`compliance_level` copy correctness in a real `--apply` run, someone must either (a) confirm/implement a parent-scoped list read (`GET /v4/compliance/program/{id}/family` and `.../level`, fanning out over every read `compliance_program`) analogous to `scope_criteria`'s `compound_key_parent_read` archetype, or (b) reclassify them to `hook`/staged until that lands.
+
+All other 14 active resources -- including all of the original 7 -- read cleanly with real, non-zero data (except `category`, which has exactly 1 record on demo1; that is genuine data, not an error) and required no code changes to confirm.
+
+
+## Equivalence regression check
+
+Ran `python scripts/equivalence_check.py --source-env .env.source --target-env .env.target` (source demo1, target **qa4**, plan only -- `--apply` never passed, no writes to either install). This is the pre-existing regression harness for the original 7 entities (billing_sources, ous, funding_sources, projects, budgets, accounts, scopes); it is unaffected by this pass's changes to `permission_scheme`/`project_cloud_access_role_exemption`/`project_enforcement` or the generic-resource split, since none of those are in the harness's oracle/engine comparison.
+
+**Verdict: EQUIVALENT** -- every entity/action count matched between the independent "oracle" walk and the metadata-driven engine after normalization (plural/singular key aliasing; OU-root `+1`), for all 7 entities and all 6 action buckets (create/recreate/adopt/ok/skipped/failed). No regressions from the metadata safety split introduced in this corrective pass.
