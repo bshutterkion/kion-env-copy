@@ -15,8 +15,32 @@ import sys
 
 from kion.client import KionAPIError, KionClient
 from kion.config import Config
+from kion.engine.inventory import build_inventory
+from kion.engine.reconcile import EngineReconciler
 from kion.export import export_install
 from kion.import_ import Importer
+from kion.meta.load import load_natural_keys, load_references, load_resource_meta
+
+
+def _engine_meta():
+    """Load the metadata that drives the generic engine: per-resource
+    read/create paths + ignores (ResourceMeta), cross-resource id references,
+    and natural-key specs, plus the resource set --engine can actually walk.
+
+    ``generator_config.yaml`` (ResourceMeta) currently covers ~60 vendor
+    entities, but ``natural_keys.yaml`` only has entries for the handful
+    onboarded to the engine so far (see CLAUDE.md task sequencing). A resource
+    without a natural-key spec would KeyError inside ``natural_key()``, so the
+    usable resource set is the intersection, not all of ``meta``. ``account``
+    has no ``generator_config.yaml`` entry under that exact name (a vendor gap)
+    but is supplied a list read_path via ``load.READ_OVERRIDES``, so it now joins
+    the set and is read as the union of /v3/account + /v3/account-cache.
+    """
+    meta = load_resource_meta()
+    refs = load_references()
+    nkeys = load_natural_keys()
+    resources = sorted(r for r in meta if r in nkeys)
+    return meta, refs, nkeys, resources
 
 
 def _client(cfg: Config) -> KionClient:
@@ -28,7 +52,11 @@ def cmd_export(args) -> int:
     client = _client(cfg)
     print(f"Exporting from {cfg.url} ...")
     try:
-        snapshot = export_install(client)
+        if args.engine:
+            meta, refs, nkeys, resources = _engine_meta()
+            snapshot = build_inventory(client, meta, refs, nkeys, resources)
+        else:
+            snapshot = export_install(client)
     except KionAPIError as e:
         print(f"\nERROR: {e}", file=sys.stderr)
         return 1
@@ -51,17 +79,27 @@ def cmd_import(args) -> int:
             id_map = json.load(f)
         print(f"Loaded state from {args.id_map}")
 
-    try:
-        importer = Importer(client, cfg, snapshot, apply=args.apply, id_map=id_map,
-                            only=args.only)
-    except ValueError as e:
-        print(f"\nERROR: invalid --only: {e}", file=sys.stderr)
-        return 2
-    try:
-        result = importer.run()
-    except KionAPIError as e:
-        print(f"\nERROR: {e}", file=sys.stderr)
-        return 1
+    if args.engine:
+        meta, refs, nkeys, _resources = _engine_meta()
+        reconciler = EngineReconciler(client, cfg, snapshot, meta, refs, nkeys,
+                                       apply=args.apply, id_map=id_map)
+        try:
+            result = reconciler.run()
+        except KionAPIError as e:
+            print(f"\nERROR: {e}", file=sys.stderr)
+            return 1
+    else:
+        try:
+            importer = Importer(client, cfg, snapshot, apply=args.apply, id_map=id_map,
+                                only=args.only)
+        except ValueError as e:
+            print(f"\nERROR: invalid --only: {e}", file=sys.stderr)
+            return 2
+        try:
+            result = importer.run()
+        except KionAPIError as e:
+            print(f"\nERROR: {e}", file=sys.stderr)
+            return 1
 
     if args.apply:
         with open(args.id_map, "w") as f:
@@ -79,6 +117,9 @@ def main() -> int:
 
     pe = sub.add_parser("export", parents=[env_parent], help="export a source install to snapshot.json")
     pe.add_argument("--out", default="snapshot.json", help="output file (default: snapshot.json)")
+    pe.add_argument("--engine", action="store_true",
+                    help="use the generic metadata-driven engine (build_inventory) "
+                         "instead of the hand-written export_install")
     pe.set_defaults(func=cmd_export)
 
     pi = sub.add_parser("import", parents=[env_parent],
@@ -89,7 +130,10 @@ def main() -> int:
     pi.add_argument("--only", default=None,
                     help="comma-separated entity kinds to sync instead of all "
                          "(billing_sources,ous,funding_sources,projects,budgets,accounts,scopes). "
-                         "e.g. --only billing_sources,accounts")
+                         "e.g. --only billing_sources,accounts. Ignored with --engine.")
+    pi.add_argument("--engine", action="store_true",
+                    help="use the generic metadata-driven engine (EngineReconciler) "
+                         "instead of the hand-written Importer")
     pi.set_defaults(func=cmd_import)
 
     args = parser.parse_args()

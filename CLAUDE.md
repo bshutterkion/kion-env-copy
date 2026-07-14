@@ -163,6 +163,27 @@ no resolvable project → the cache).
   **gcp/azure/anthropic** are exported but skipped (need a prerequisite service
   account or provider registration flow). Adopted by name.
 
+## Metadata-driven engine (experimental)
+
+`kion/engine/` + `kion/meta/` + `kion/overrides/` is a generic, metadata-driven
+engine that reproduces the hand-written `export.py`/`import_.py` above and is meant
+to generalize to the ~60 resources the Kion Terraform provider supports (this repo
+copies 7 today). It reads provider codegen metadata (vendored under
+`kion/meta/vendor/`, refreshed by `scripts/sync-provider-meta.sh`) plus two authored
+files — `kion/meta/references.yaml` (FK fields → target resource + natural key) and
+`kion/meta/natural_keys.yaml` (per-resource identity) — instead of hand-coding a
+read/reconcile pair per entity kind. `kion/overrides/registry.py` is the escape
+hatch (`Hooks`) for behavior that resists declaration (e.g. budget/scope's
+`reconcile_override`).
+
+It is **opt-in** via `--engine` on `export`/`import` (omit it and you get the oracle
+above, unchanged); `export.py`/`import_.py` remain the reference oracle and the
+default path. `scripts/equivalence_check.py` is the regression gate — it plans the
+same source→target pair through both the oracle and the engine and diffs the
+per-entity action counts; it prints `EQUIVALENT` today for the 7. Full architecture,
+the metadata layers, each hook type, and the "add a resource" recipe:
+`docs/engine.md`. Design rationale: `docs/superpowers/specs/2026-07-14-tf-resource-parity-engine-design.md`.
+
 ## Out of scope (not copied)
 
 Cloud accounts, cloud rules, labels, custom variables, compliance, app-role

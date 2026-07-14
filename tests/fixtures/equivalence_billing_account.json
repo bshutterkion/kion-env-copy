@@ -1,0 +1,41 @@
+{
+  "_doc": "Hand-checked equivalence fixture (Task 11). A small engine inventory exercising billing_source + account (routed to cache), plus the plan decisions the ORACLE (Importer) would make for the equivalent snapshot. The offline test asserts EngineReconciler reproduces these counts in PLAN mode. See tests/test_equivalence.py for the target-index injection and the oracle-equivalence reasoning.",
+  "inject": {
+    "_doc": "Injected target index (bypasses _index_target/network). billing_source: nothing on target. account: number 333 already present (id 900) -> adopt.",
+    "t_key": {
+      "billing_source": {},
+      "account": {"333": 900}
+    },
+    "t_ids": {
+      "billing_source": [],
+      "account": [900]
+    }
+  },
+  "inventory": {
+    "billing_source": [
+      {"source_id": 10, "natural_key": ["Custom BS"],
+       "fields": {"name": "Custom BS", "type": "custom", "config": {"billing_start_date": "2024-01"}}},
+      {"source_id": 20, "natural_key": ["GCP BS"],
+       "fields": {"name": "GCP BS", "type": "gcp", "config": {}}}
+    ],
+    "account": [
+      {"source_id": "a1", "natural_key": ["111"],
+       "fields": {"account_number": "111", "account_name": "Acct A", "provider": "custom",
+                  "account_type_id": 29, "__srcid__payer_id": 10, "__srcid__project_id": null,
+                  "start_datecode": "2024-01"}},
+      {"source_id": "a2", "natural_key": ["222"],
+       "fields": {"account_number": "222", "account_name": "Acct B", "provider": "custom",
+                  "account_type_id": 29, "__srcid__payer_id": 20, "__srcid__project_id": null,
+                  "start_datecode": "2024-01"}},
+      {"source_id": "a3", "natural_key": ["333"],
+       "fields": {"account_number": "333", "account_name": "Acct C", "provider": "custom",
+                  "account_type_id": 29, "__srcid__payer_id": 10, "__srcid__project_id": null,
+                  "start_datecode": "2024-01"}}
+    ]
+  },
+  "expected_engine_counts": {
+    "_doc": "Hand-verified oracle plan for the equivalent snapshot (see test docstring). billing_source: Custom BS creates (type custom has an API recreate path), GCP BS skips (no API recreate path). account: Acct A creates into the cache (custom payer resolved via the just-created billing source, no project), Acct C adopts (number 333 already on target), Acct B skips (its GCP payer was skipped so the payer never mapped).",
+    "billing_source": {"create": 1, "adopt": 0, "recreate": 0, "ok": 0, "skipped": 1, "failed": 0},
+    "account": {"create": 1, "adopt": 1, "recreate": 0, "ok": 0, "skipped": 1, "failed": 0}
+  }
+}

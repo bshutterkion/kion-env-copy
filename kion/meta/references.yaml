@@ -1,0 +1,15 @@
+# field -> which resource it references, and by what natural key
+funding_source:
+  - {field: ou_id, target: ou, key: name, optional: true}
+project:
+  - {field: ou_id, target: ou, key: name}
+budget:
+  - {field: ou_id, target: ou, key: name, optional: true}
+  - {field: project_id, target: project, key: name, optional: true}
+  - {field: funding_source_id, target: funding_source, key: name, many: true}
+account:
+  - {field: project_id, target: project, key: name, optional: true}
+  - {field: payer_id, target: billing_source, key: name}
+scope:
+  - {field: project_id, target: project, key: name}
+  - {field: account_numbers, target: account, key: account_number, many: true}
