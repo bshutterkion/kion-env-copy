@@ -21,6 +21,7 @@ from __future__ import annotations
 from kion.client import KionAPIError
 from kion.engine.keys import natural_key
 from kion.engine.order import order_resources
+from kion.engine.paths import list_path
 from kion.engine.refmap import to_target_ids
 from kion.import_ import ACTIONS
 from kion.overrides.registry import HOOKS
@@ -112,9 +113,9 @@ class EngineReconciler:
                 self._t_key.setdefault(res, {})
                 self._t_ids.setdefault(res, set())
                 continue
-            list_path = read_path.split("/{")[0]  # strip a trailing /{id} template
+            lp = list_path(read_path)  # shared with kion.engine.inventory
             try:
-                resp = self.client.get(list_path)
+                resp = self.client.get(lp)
             except KionAPIError as e:
                 self.warnings.append(f"target {res} list failed: {e.status}")
                 resp = []
