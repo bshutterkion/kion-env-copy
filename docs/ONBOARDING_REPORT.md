@@ -596,3 +596,63 @@ this tool is designed to surface, not paper over.
   itself, not a `registry.py` hook -- outside this pass's scope, which was
   limited to adding hooks that reuse existing ctx/oracle surface, never
   modifying the engine's read or indexing machinery.
+
+## Live inventory validation (independent re-verification pass)
+
+A separate validation pass re-ran the checks in "Live read smoke (active
+resources)" and "Equivalence regression check" above from scratch, on branch
+`feature/engine-onboard-resources`, to confirm nothing regressed after the 12
+hooks landed (previous section, "Hooks implemented (this pass)"). All checks
+were read-only; no writes were made to either install.
+
+**Unit suite**: `python -m pytest tests/ -q` — **251 passed**, 0 failed.
+
+**Live read-only smoke** (per-resource, `.env.source` = demo1): a throwaway,
+uncommitted script called `engine_meta()` for the active resource set, then
+`build_inventory(client, meta, refs, nkeys, [r])` **individually for each**
+of the 16 active resources (rather than one call across all 16), each
+wrapped in its own `try/except` so a single resource's failure couldn't mask
+the rest. `build_inventory` only issues GETs; `.env.source` was never
+written to.
+
+| resource | result |
+|---|---|
+| account | ok — 102 records |
+| app_api_key | ok — 9 records |
+| app_role | ok — 75 records |
+| billing_rule | ok — 8 records |
+| billing_source | ok — 17 records |
+| budget | ok — 110 records |
+| category | ok — 1 record |
+| compliance_family | ok (no exception) — 0 records, same caught HTTP 405 as before |
+| compliance_level | ok (no exception) — 0 records, same caught HTTP 405 as before |
+| compliance_program | ok — 28 records |
+| funding_source | ok — 65 records |
+| idms | ok — 11 records |
+| ou | ok — 22 records |
+| project | ok — 36 records |
+| scope | ok — 9 records |
+| webhook | ok — 10 records |
+
+**16/16 resources read without raising** (none of the 16 `try/except`
+wrappers caught an exception). Two of those 16 — `compliance_family` and
+`compliance_level` — reproduce the exact same non-fatal, caught HTTP 405 on
+their derived list endpoint (`GET /v4/compliance/family`, `GET
+/v4/compliance/level`) documented in "Live read smoke (active resources)"
+above; counts for all 14 other resources match that section's figures
+exactly. This is a repeat confirmation of the existing flag, not a new
+finding — see that section for the full analysis and follow-up
+recommendation (parent-scoped list read or reclassification to
+`hook`/staged).
+
+**Equivalence regression**: re-ran `python scripts/equivalence_check.py
+--source-env .env.source --target-env .env.target` (source demo1, target
+qa4, plan only — `--apply` never passed, no writes to either install).
+
+**Verdict: EQUIVALENT** — every entity/action count for all 7 original
+entities (billing_sources, ous, funding_sources, projects, budgets,
+accounts, scopes) and all 6 action buckets (create/recreate/adopt/ok/
+skipped/failed) matched between the oracle and engine walks after
+normalization, identical to the "Equivalence regression check" section
+above. Onboarding the 9 generic resources plus the 12 new hooks introduced
+no regression in the original 7 entities' plan output.
