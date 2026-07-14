@@ -30,6 +30,19 @@ def _yaml(vendor_dir, name):
     with open(os.path.join(vendor_dir, name)) as f:
         return yaml.safe_load(f) or {}
 
+# Read/create paths for resources the engine needs but the VENDORED
+# generator_config.yaml doesn't describe under that exact name — supplied here so
+# we never edit the vendored files. ``account`` is incomplete in codegen (its
+# records are a union of /v3/account + /v3/account-cache assembled in
+# kion.engine.inventory._read_accounts), so it only needs a list read_path to be
+# picked up by build_inventory / _index_target.
+READ_OVERRIDES: dict[str, dict] = {
+    "account": {
+        "read_path": "/v3/account", "read_method": "GET",
+        "create_path": "/v3/account", "create_method": "POST",
+    },
+}
+
 def load_resource_meta(vendor_dir: str | None = None) -> dict[str, ResourceMeta]:
     vendor_dir = vendor_dir or _VENDOR
     gc = _yaml(vendor_dir, "generator_config.yaml").get("resources", {})
@@ -50,6 +63,16 @@ def load_resource_meta(vendor_dir: str | None = None) -> dict[str, ResourceMeta]
             m.parent_id_field = a.get("parent_id_field")
             m.child_id_field = a.get("child_id_field")
             m.collection = a.get("collection")
+        out[name] = m
+
+    # Merge Python-side read/create overrides (see READ_OVERRIDES). A resource
+    # absent from the vendored config (e.g. account) is created here; one already
+    # present has only the supplied fields overlaid.
+    for name, ov in READ_OVERRIDES.items():
+        m = out.get(name) or ResourceMeta(name=name)
+        for attr in ("read_path", "read_method", "create_path", "create_method"):
+            if ov.get(attr) is not None:
+                setattr(m, attr, ov[attr])
         out[name] = m
     return out
 

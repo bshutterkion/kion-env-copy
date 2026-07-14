@@ -31,10 +31,10 @@ def _engine_meta():
     entities, but ``natural_keys.yaml`` only has entries for the handful
     onboarded to the engine so far (see CLAUDE.md task sequencing). A resource
     without a natural-key spec would KeyError inside ``natural_key()``, so the
-    usable resource set is the intersection, not all of ``meta`` (also drops
-    ``account``, which has a natural-key spec but no ``generator_config.yaml``
-    entry under that exact name — a pre-existing vendor-metadata gap, not
-    introduced here).
+    usable resource set is the intersection, not all of ``meta``. ``account``
+    has no ``generator_config.yaml`` entry under that exact name (a vendor gap)
+    but is supplied a list read_path via ``load.READ_OVERRIDES``, so it now joins
+    the set and is read as the union of /v3/account + /v3/account-cache.
     """
     meta = load_resource_meta()
     refs = load_references()

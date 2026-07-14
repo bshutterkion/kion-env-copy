@@ -1,4 +1,5 @@
 import os, sys
+from types import SimpleNamespace
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import kion.engine.reconcile as reconcile_mod
 from kion.engine.reconcile import EngineReconciler
@@ -140,6 +141,70 @@ def test_index_target_only_scans_inventory_resources():
                          nkeys={"thing": {"kind": "name"}}, apply=False)
     r.run()
     assert client.calls == ["/x"]  # only 'thing' was listed, never 'irrelevant'
+
+def test_index_target_enriches_ctx():
+    """_index_target must populate schemes/users/groups/target_root_id/
+    current_user_id, and the resolve_scheme/resolve_owners ctx methods (incl. the
+    current-user owner fallback) must mirror Importer (concern A)."""
+    class Client:
+        DATA = {
+            "/v3/permission-scheme": [
+                {"name": "Default OU Permissions Scheme", "id": 10},
+                {"name": "Custom", "id": 11},
+            ],
+            "/v3/user": [{"email": "A@x.com", "id": 5}, {"id": 6}],  # 2nd has no email
+            "/v3/user-group": [{"name": "admins", "id": 7}],
+            "/v3/ou": [{"id": 100, "parent_ou_id": None},
+                       {"id": 101, "parent_ou_id": 100}],
+            "/v3/app-api-key": [{"user_id": 42}],
+        }
+
+        def get(self, path, params=None):
+            return self.DATA.get(path, [])
+
+    cfg = SimpleNamespace(default_permission_scheme_id=99)
+    r = EngineReconciler(client=Client(), config=cfg, inventory={}, meta={},
+                         refs={}, nkeys={}, apply=False)
+    r._index_target()
+    assert r.schemes == {"Default OU Permissions Scheme": 10, "Custom": 11}
+    assert r.users == {"a@x.com": 5}
+    assert r.groups == {"admins": 7}
+    assert r.target_root_id == 100
+    assert r.current_user_id == 42
+
+    assert r.resolve_scheme("Custom", "ou", "lbl") == (11, "matched")
+    assert r.resolve_scheme("nope", "ou", "lbl") == (10, "type_default")
+    # 'project' type default not on target -> DEFAULT_PERMISSION_SCHEME_ID
+    assert r.resolve_scheme("nope", "project", "lbl") == (99, "default")
+
+    uids, gids = r.resolve_owners(
+        {"owner_user_emails": ["A@x.com"], "owner_user_group_names": ["admins"]}, "lbl")
+    assert uids == [5] and gids == [7]
+    # empty owners -> current-user fallback
+    uids2, gids2 = r.resolve_owners({}, "lbl")
+    assert uids2 == [42] and gids2 == []
+    assert r._owner_fallback == 1
+
+
+def test_index_target_skips_ctx_reads_when_config_none():
+    """With config=None (some unit tests), _index_target must not attempt the
+    ctx enrichment reads (guarded), only the inventory-resource list reads."""
+    class M2: pass
+    m = M2(); m.read_path = "/x/{id}"; m.ignores = []; m.name = "thing"
+    calls = []
+
+    class Client:
+        def get(self, path):
+            calls.append(path)
+            return {"data": []}
+
+    inv = {"thing": [{"source_id": 1, "natural_key": ("a",), "fields": {"name": "A"}}]}
+    r = EngineReconciler(client=Client(), config=None, inventory=inv,
+                         meta={"thing": m}, refs={"thing": []},
+                         nkeys={"thing": {"kind": "name"}}, apply=False)
+    r._index_target()
+    assert calls == ["/x"]  # no /v3/permission-scheme etc.
+
 
 def test_plan_recreates_when_mapped_id_missing_from_target():
     inv = {"thing": [{"source_id": 1, "natural_key": ("a",), "fields": {"name": "A"}}]}

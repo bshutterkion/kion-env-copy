@@ -13,25 +13,12 @@ endpoint a resource's records come from).
 """
 from __future__ import annotations
 
-from kion.client import KionAPIError
 from kion.engine.keys import natural_key
 from kion.engine.order import order_resources
 from kion.engine.paths import list_path
+from kion.engine.read import list_records
 from kion.engine.refmap import to_natural
-
-
-def _list_records(client, path: str) -> list[dict]:
-    """GET a resource's list endpoint, defensively unwrapping either a bare
-    list or an ``{items|data, ...}``-style envelope — the same shapes
-    ``kion/export.py`` and ``EngineReconciler._index_target`` already handle."""
-    try:
-        resp = client.get(path)
-    except KionAPIError:
-        return []
-    if isinstance(resp, dict):
-        records = resp.get("items") if "items" in resp else resp.get("data")
-        return records or []
-    return resp or []
+from kion.export import _account_record
 
 
 def _parent_target(res: str, parent_field: str, refs: dict) -> str:
@@ -72,6 +59,34 @@ def _record_key(res: str, record: dict, nkeys: dict, refs: dict, id_to_key: dict
     return (parent, name)
 
 
+def _read_accounts(client, res_refs, id_to_key) -> list[dict]:
+    """Cloud-account inventory records: the UNION of project-associated accounts
+    (``/v3/account``) and cached, unassociated accounts (``/v3/account-cache``),
+    mirroring ``export._export_accounts`` / ``_account_record``.
+
+    ``account`` has no ``generator_config.yaml`` read entry (a vendor gap) and
+    its records don't fit the generic list path: cached ids are namespaced
+    ``cache:<id>`` so they never collide with associated ids, and the record's
+    portable shape comes from ``_account_record`` (provider derived via
+    ``ACCOUNT_PROVIDER``, cached accounts carry no project). Reference fields
+    (``payer_id``/``project_id``) are ``to_natural``-translated so the source
+    ids survive as ``__srcid__payer_id``/``__srcid__project_id`` for the 10c
+    account hook. Natural key is ``(account_number,)``."""
+    raw = [_account_record(a, cached=False)
+           for a in (list_records(client, "/v3/account") or [])]
+    raw += [_account_record(a, cached=True)
+            for a in (list_records(client, "/v3/account-cache") or [])]
+
+    out = []
+    for rec in raw:
+        source_id = rec.pop("source_id")  # already 'cache:<id>' for cached accounts
+        key = (rec.get("account_number"),)
+        id_to_key[("account", source_id)] = key
+        fields = to_natural(rec, res_refs, id_to_key)
+        out.append({"source_id": source_id, "natural_key": key, "fields": fields})
+    return out
+
+
 def build_inventory(client, meta: dict, refs: dict, nkeys: dict,
                      resources: list[str]) -> dict[str, list[dict]]:
     """Read ``resources`` off ``client`` in dependency order and return
@@ -83,10 +98,16 @@ def build_inventory(client, meta: dict, refs: dict, nkeys: dict,
     inventory: dict[str, list[dict]] = {}
 
     for res in order_resources(resources, refs):
+        res_refs = refs.get(res, [])
+        # account is a union of two endpoints with namespaced cached ids — it
+        # can't go through the generic single-list path (see _read_accounts).
+        if res == "account":
+            inventory[res] = _read_accounts(client, res_refs, id_to_key)
+            continue
+
         rm = meta[res]
         path = list_path(getattr(rm, "read_path", None))
-        records = _list_records(client, path) if path else []
-        res_refs = refs.get(res, [])
+        records = list_records(client, path) if path else []
         ignores = set(getattr(rm, "ignores", None) or [])
 
         out = []

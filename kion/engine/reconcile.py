@@ -22,8 +22,15 @@ from kion.client import KionAPIError
 from kion.engine.keys import natural_key
 from kion.engine.order import order_resources
 from kion.engine.paths import list_path
+from kion.engine.read import list_records
 from kion.engine.refmap import to_target_ids
-from kion.import_ import ACTIONS
+from kion.import_ import (
+    ACTIONS,
+    TYPE_DEFAULT_SCHEME,
+    find_root_ou_id,
+)
+from kion.import_ import resolve_owners as _pure_resolve_owners
+from kion.import_ import resolve_scheme as _pure_resolve_scheme
 from kion.overrides.registry import HOOKS
 
 
@@ -46,6 +53,18 @@ class EngineReconciler:
         # the network) — see the module docstring and the brief.
         self._t_key: dict = {}
         self._t_ids: dict = {}
+
+        # ctx enrichment the per-entity hooks read to build create payloads
+        # (schemes/owners/root/current user), mirroring Importer. Populated by
+        # _index_ctx (only when config is set); left as safe empties otherwise so
+        # the resolve_* methods never AttributeError.
+        self.schemes: dict = {}
+        self.users: dict = {}
+        self.groups: dict = {}
+        self.target_root_id = None
+        self.current_user_id = None
+        self.t_acct_by_number: dict = {}  # account hook (10c) fills this as it creates
+        self._owner_fallback = 0
 
         self._placeholder = 0
         self._pinned_path: dict = {}
@@ -96,16 +115,47 @@ class EngineReconciler:
         return None
 
     # -- target indexing ------------------------------------------------------
+    def _index_ctx(self):
+        """Enrich ctx with the target lookups the per-entity hooks need to build
+        create payloads — schemes/users/groups by natural key, the target root
+        OU, and the importing user (fallback owner). Mirrors the ctx block of
+        ``Importer._index_target``.
+
+        Called unconditionally from ``_index_target`` (independent of the
+        per-resource inventory loop, so it runs even when the inventory is empty),
+        but only when ``config`` is set: unit tests that inject ``_t_key`` skip
+        ``_index_target`` entirely, and tests that pass ``config=None`` don't
+        need — and must not trigger — these reads."""
+        self.schemes = {s["name"]: s["id"]
+                        for s in (self.client.get("/v3/permission-scheme") or [])}
+        self.users = {u["email"].lower(): u["id"]
+                      for u in (self.client.get("/v3/user") or []) if u.get("email")}
+        self.groups = {g["name"]: g["id"]
+                       for g in (self.client.get("/v3/user-group") or []) if g.get("name")}
+        # App API keys are user-scoped, so any key returned belongs to the
+        # importing user — used as the fallback owner.
+        try:
+            keys = self.client.get("/v3/app-api-key") or []
+            self.current_user_id = keys[0].get("user_id") if keys else None
+        except KionAPIError:
+            self.current_user_id = None
+        ous = self.client.get("/v3/ou") or []
+        self.target_root_id = find_root_ou_id(ous)
+
     def _index_target(self):
-        """Populate ``_t_key``/``_t_ids`` per resource by listing the target.
+        """Populate ``_t_key``/``_t_ids`` per resource by listing the target, and
+        enrich the reconcile ctx (schemes/owners/root/current user).
 
         Factored out so tests can set ``_t_key``/``_t_ids`` by hand and skip the
         network entirely (``run()`` only calls this when they're still empty).
 
-        Scoped to ``self.inventory`` (the resources actually being reconciled),
-        not all of ``self.meta`` — ``self.meta`` is the full ~30-resource
-        generator_config, and most of those aren't in play for a given run.
-        """
+        The per-resource loop is scoped to ``self.inventory`` (the resources
+        actually being reconciled), not all of ``self.meta`` — ``self.meta`` is
+        the full ~60-resource generator_config, most of which aren't in play for a
+        given run. The ctx enrichment (``_index_ctx``) is separate and
+        unconditional, so it still runs when the inventory is empty."""
+        if self.config is not None:
+            self._index_ctx()
         for res in self.inventory:
             rm = self.meta[res]
             read_path = getattr(rm, "read_path", None)
@@ -114,15 +164,7 @@ class EngineReconciler:
                 self._t_ids.setdefault(res, set())
                 continue
             lp = list_path(read_path)  # shared with kion.engine.inventory
-            try:
-                resp = self.client.get(lp)
-            except KionAPIError as e:
-                self.warnings.append(f"target {res} list failed: {e.status}")
-                resp = []
-            records = resp
-            if isinstance(resp, dict):
-                records = resp.get("items") if "items" in resp else resp.get("data")
-            records = records or []
+            records = list_records(self.client, lp)  # shared unwrap + pagination
 
             key_map, ids = {}, set()
             for rec in records:
@@ -136,6 +178,36 @@ class EngineReconciler:
                     continue
             self._t_key[res] = key_map
             self._t_ids[res] = ids
+
+    # -- ctx helpers hooks call (via the reconciler passed as ctx) -------------
+    def resolve_scheme(self, name, entity_type: str, label: str):
+        """Resolve a permission scheme id for a create, appending the same
+        type_default/default/unresolved warnings as ``Importer._resolve_scheme``."""
+        type_default = TYPE_DEFAULT_SCHEME.get(entity_type)
+        default_id = self.config.default_permission_scheme_id if self.config else None
+        sid, status = _pure_resolve_scheme(name, self.schemes, type_default, default_id)
+        if status == "type_default":
+            self.warnings.append(f"{label}: using '{type_default}' (id {sid})")
+        elif status == "default":
+            self.warnings.append(f"{label}: scheme '{name}' not on target -> DEFAULT id {sid}")
+        elif status == "unresolved":
+            self.warnings.append(
+                f"{label}: no permission scheme resolvable (no '{type_default}', no DEFAULT)")
+        return sid, status
+
+    def resolve_owners(self, rec, label: str):
+        """Resolve owner user/group ids by email/name, falling back to the
+        importing user when none resolve (OU/funding/project require ≥1 owner) —
+        mirrors ``Importer._resolve_owners``."""
+        uids, gids, dropped = _pure_resolve_owners(
+            rec.get("owner_user_emails"), rec.get("owner_user_group_names"),
+            self.users, self.groups)
+        for d in dropped:
+            self.warnings.append(f"{label}: dropped owner {d} (not on target)")
+        if not uids and not gids and self.current_user_id is not None:
+            uids = [self.current_user_id]
+            self._owner_fallback += 1
+        return uids, gids
 
     def _key_to_tid(self) -> dict:
         """Flatten ``_t_key`` into the ``(target_resource, key) -> id`` shape
