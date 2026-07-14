@@ -206,6 +206,47 @@ def test_index_target_skips_ctx_reads_when_config_none():
     assert calls == ["/x"]  # no /v3/permission-scheme etc.
 
 
+def test_index_target_billing_source_indexes_by_flattened_name():
+    """A RAW /v4/billing-source record has NO top-level 'name' -- it's nested
+    under aws_payer/gcp_payer/azure_payer/oci_payer/custom_billing_source/
+    anthropic_billing_source (GCP nests further under
+    gcp_billing_account.name). Indexing target billing sources via the
+    generic list_records + natural_key path (as every other resource is)
+    would compute every one's key as ("",), so nothing ever adopts by name
+    and an already-present target billing source gets wrongly planned as
+    create. _index_target must special-case billing_source like it already
+    does account: build the target index from EXPORT-SHAPED records (the
+    same export._export_billing_sources reader the inventory uses for the
+    SOURCE side) so the natural key computes on the real, flattened name --
+    symmetric with the source read."""
+    from kion.import_ import nkey
+
+    class Client:
+        def get(self, path, params=None):
+            if path == "/v4/billing-source":
+                return {"items": [
+                    {"id": 500, "custom_billing_source": {"name": "Acme Billing"}},
+                    {"id": 501, "aws_payer": {"name": "AWS Payer"}},
+                ]}
+            return []
+
+    m = M(); m.read_path = "/v4/billing-source"; m.ignores = []
+    m.archetype = "entity"; m.name = "billing_source"
+    r = EngineReconciler(client=Client(), config=None,
+                         inventory={"billing_source": []},
+                         meta={"billing_source": m}, refs={"billing_source": []},
+                         nkeys={"billing_source": {"kind": "name"}}, apply=False)
+    r._index_target()
+    assert r._t_key["billing_source"] == {
+        (nkey("Acme Billing"),): 500,
+        (nkey("AWS Payer"),): 501,
+    }
+    assert r._t_ids["billing_source"] == {500, 501}
+    # the bug this guards against: a raw-record index would have collapsed
+    # both into a single ("",) key instead of the two flattened-name keys.
+    assert ("",) not in r._t_key["billing_source"]
+
+
 def test_index_target_warns_on_target_list_failure():
     """A failing target-side list read must append a 'list failed' warning
     (restoring pre-Task-10a visibility) rather than silently indexing nothing

@@ -24,6 +24,7 @@ from kion.engine.order import order_resources
 from kion.engine.paths import list_path
 from kion.engine.read import list_records
 from kion.engine.refmap import to_target_ids
+from kion.export import _export_billing_sources
 from kion.import_ import (
     ACTIONS,
     TYPE_DEFAULT_SCHEME,
@@ -162,6 +163,35 @@ class EngineReconciler:
             self._index_ctx()
         for res in self.inventory:
             rm = self.meta[res]
+
+            if res == "billing_source":
+                # A RAW /v4/billing-source record has no top-level ``name`` --
+                # it's nested under aws_payer/gcp_payer/azure_payer/oci_payer/
+                # custom_billing_source/anthropic_billing_source (GCP nests
+                # further under gcp_billing_account.name). Indexing raw
+                # records via the generic list_records + natural_key path
+                # below would compute every target billing source's key as
+                # ("",) -- nothing would ever adopt by name. Reuse the SAME
+                # export-shaped reader the inventory uses for billing_source
+                # (kion.engine.inventory._EXPORT_READERS / export.
+                # _export_billing_sources), which flattens the name to a
+                # top-level field, so the target index is symmetric with how
+                # the source side is read.
+                records = _export_billing_sources(self.client)
+                key_map, ids = {}, set()
+                for rec in records:
+                    rid = rec.get("source_id")
+                    if rid is None:
+                        continue
+                    ids.add(rid)
+                    try:
+                        key_map[natural_key(res, rec, self.nkeys)] = rid
+                    except (KeyError, ValueError):
+                        continue
+                self._t_key[res] = key_map
+                self._t_ids[res] = ids
+                continue
+
             read_path = getattr(rm, "read_path", None)
             if not read_path:
                 self._t_key.setdefault(res, {})
