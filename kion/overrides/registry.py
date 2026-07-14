@@ -467,6 +467,288 @@ def _scope_reconcile(ctx, records):
                 f"(create only succeeds once that data exists on the target)")
 
 
+# -- onboarded resources (49-resource metadata sweep) ----------------------
+# The 12 hooks below implement the STRAIGHTFORWARD subset of the 20 "hook" +
+# 1 "read_transform" resources classified in the onboarding sweep (see
+# .superpowers/onboard/proposals/*.json and docs/ONBOARDING_REPORT.md) --
+# ones resolvable with only: ctx.resolve_owners (owner_user_ids/
+# owner_user_group_ids), ctx.current_user_id (a required "creator" field
+# with no cross-install-preservable source value, mirroring OU's owner
+# fallback), or a plain id_map lookup against an already-onboarded resource
+# (account/ou/project/idms). The remaining 9 (azure_arm_template,
+# azure_policy, cloud_rule, compliance_check, compliance_control,
+# custom_variable, gcp_iam_role, idms_open_id, user) are deferred -- see
+# "Deferred hooks" in docs/ONBOARDING_REPORT.md for why each doesn't fit
+# this reuse-only mandate.
+#
+# IMPORTANT: these hooks are inert until each resource's natural_key/
+# references entries are promoted from kion/meta/*.staged.yaml into the
+# active kion/meta/natural_keys.yaml + references.yaml (a separate,
+# reviewed step -- engine_meta() only treats a resource as engine-ready
+# once it's in the active natural_keys.yaml). Written and unit-tested now
+# so that promotion step is a metadata-only change with no code to write.
+#
+# Common, deliberate omission across this batch: several create bodies also
+# carry raw id-list fields that reference `user`/`user_group` OUTSIDE the
+# owner convention (e.g. car_restricted_user_ids, viewer_user_ids, a bare
+# user_ids/user_group_ids membership list). `user`/`user_group` have no
+# natural_keys.yaml entry or engine/keys.py kind (see the deferred `user`
+# writeup), so there is no mechanism to translate those ids across installs.
+# Forwarding them unchanged would silently write wrong/colliding ids on the
+# target -- exactly the mis-copy risk this engine is built to avoid -- so
+# every such field is left out of the payload entirely (a documented,
+# honest degradation: the record is created as a functional shell, same
+# spirit as the billing_source custom/aws/oci shell precedent), never
+# passed through raw.
+
+def _ami_payload(fields, ctx):
+    """account_id is the one required reference (resolved like scope/account's
+    existing payer_id/project_id lookups); owner_user_ids/owner_user_group_ids
+    are optional here (unlike OU) so ctx.resolve_owners' running-user fallback
+    just yields a legal, if attributed-to-the-importer, owner list."""
+    label = f"ami '{fields.get('name')}'"
+    account_new = ctx.id_map["account"].get(str(fields.get("__srcid__account_id")))
+    if account_new is None:
+        return None  # caller will skip (required account unresolved)
+    uids, gids = ctx.resolve_owners(fields, label)
+    payload = {
+        "name": fields.get("name"),
+        "account_id": account_new,
+        "aws_ami_id": fields.get("aws_ami_id"),
+        "region": fields.get("region"),
+        "owner_user_ids": uids,
+        "owner_user_group_ids": gids,
+    }
+    for k in ("description", "expiration_alert_number", "expiration_alert_unit",
+              "expiration_notify", "expiration_warning_number", "expiration_warning_unit",
+              "expires_at", "sync_deprecation", "sync_tags"):
+        if fields.get(k) is not None:
+            payload[k] = fields[k]
+    return ["/v3/ami"], payload
+
+
+def _azure_role_payload(fields, ctx):
+    """Standalone (no parent). car_restricted_user_ids/car_restricted_user_group_ids
+    are deliberately omitted -- see the batch-level comment above."""
+    label = f"azure role '{fields.get('name')}'"
+    uids, gids = ctx.resolve_owners(fields, label)
+    payload = {
+        "name": fields.get("name"),
+        "role_permissions": fields.get("role_permissions"),
+        "description": fields.get("description") or "",
+        "owner_user_ids": uids,
+        "owner_user_group_ids": gids,
+    }
+    return ["/v3/azure-role"], payload
+
+
+def _cft_payload(fields, ctx):
+    """Standalone (no ou_id/project_id parent). policy/sns_arns/tags/
+    template_parameters are opaque AWS-side data, passed through verbatim."""
+    label = f"cft '{fields.get('name')}'"
+    uids, gids = ctx.resolve_owners(fields, label)
+    payload = {
+        "name": fields.get("name"),
+        "description": fields.get("description") or "",
+        "policy": fields.get("policy"),
+        "regions": fields.get("regions") or [],
+        "owner_user_ids": uids,
+        "owner_user_group_ids": gids,
+    }
+    for k in ("region", "sns_arns", "tags", "template_parameters", "termination_protection"):
+        if fields.get(k) is not None:
+            payload[k] = fields[k]
+    return ["/v3/cft"], payload
+
+
+def _compliance_standard_payload(fields, ctx):
+    """created_by_user_id is REQUIRED and has no cross-install-preservable
+    source value -- fall back to the running import user unconditionally
+    (mirrors OU's owner fallback, applied to a single scalar field instead of
+    a list). compliance_check_ids/cloud_rule_id point at sibling resources
+    this engine doesn't reconcile (compliance_check and cloud_rule are both
+    deferred) -- omitted rather than forwarded as raw source ids."""
+    label = f"compliance standard '{fields.get('name')}'"
+    if ctx.current_user_id is None:
+        return None  # caller will skip (required created_by_user_id unresolved)
+    uids, gids = ctx.resolve_owners(fields, label)
+    payload = {
+        "name": fields.get("name"),
+        "description": fields.get("description") or "",
+        "created_by_user_id": ctx.current_user_id,
+        "owner_user_ids": uids,
+        "owner_user_group_ids": gids,
+    }
+    return ["/v3/compliance/standard"], payload
+
+
+def _iam_policy_payload(fields, ctx):
+    """Standalone. car_restricted_user_ids/car_restricted_user_group_ids are
+    deliberately omitted -- see the batch-level comment above; car_restricted
+    itself (the boolean flag) is plain data and passes through."""
+    label = f"iam policy '{fields.get('name')}'"
+    uids, gids = ctx.resolve_owners(fields, label)
+    payload = {
+        "name": fields.get("name"),
+        "policy": fields.get("policy"),
+        "description": fields.get("description") or "",
+        "owner_user_ids": uids,
+        "owner_user_group_ids": gids,
+    }
+    if fields.get("aws_iam_path"):
+        payload["aws_iam_path"] = fields["aws_iam_path"]
+    if fields.get("car_restricted") is not None:
+        payload["car_restricted"] = fields["car_restricted"]
+    return ["/v3/iam-policy"], payload
+
+
+def _ou_cloud_access_role_payload(fields, ctx):
+    """ou_id is the one required reference. user_ids/user_group_ids and the
+    aws_iam_permissions_boundary/aws_iam_policies/azure_role_definitions
+    associations are deliberately omitted -- see the batch-level comment
+    above; the created CAR is a functional-shell, same spirit as the
+    billing_source custom/aws/oci shells."""
+    label = f"ou cloud access role '{fields.get('name')}'"
+    ou_new = ctx.id_map["ou"].get(str(fields.get("__srcid__ou_id")))
+    if ou_new is None:
+        return None  # caller will skip (required OU unresolved)
+    payload = {
+        "name": fields.get("name"),
+        "ou_id": ou_new,
+        "aws_iam_path": fields.get("aws_iam_path") or "",
+        "aws_iam_role_name": fields.get("aws_iam_role_name"),
+        "long_term_access_keys": bool(fields.get("long_term_access_keys")),
+        "short_term_access_keys": bool(fields.get("short_term_access_keys")),
+        "web_access": bool(fields.get("web_access")),
+    }
+    return ["/v3/ou-cloud-access-role"], payload
+
+
+def _ou_note_payload(fields, ctx):
+    """ou_id resolves like project's ou_id reference. create_user_id is
+    REQUIRED and has no cross-install-preservable source value -- fall back to
+    the running import user unconditionally (mirrors OU's owner fallback)."""
+    label = f"ou note '{fields.get('name')}'"
+    ou_new = ctx.id_map["ou"].get(str(fields.get("__srcid__ou_id")))
+    if ou_new is None:
+        return None  # caller will skip (required OU unresolved)
+    if ctx.current_user_id is None:
+        return None  # caller will skip (required create_user_id unresolved)
+    payload = {
+        "name": fields.get("name"),
+        "ou_id": ou_new,
+        "text": fields.get("text") or "",
+        "create_user_id": ctx.current_user_id,
+    }
+    return ["/v3/ou-note"], payload
+
+
+def _project_cloud_access_role_payload(fields, ctx):
+    """project_id is the one required reference; account_ids is an optional
+    many-reference resolved the same id_map way (missing accounts are simply
+    dropped, mirroring scope's account handling). user_ids/user_group_ids and
+    the aws_iam_policies/aws_iam_permissions_boundary/azure_role_definitions/
+    gcp_iam_roles/cloud_provider_ids associations are deliberately omitted --
+    see the batch-level comment above."""
+    label = f"project cloud access role '{fields.get('name')}'"
+    proj_new = ctx.id_map["project"].get(str(fields.get("__srcid__project_id")))
+    if proj_new is None:
+        return None  # caller will skip (required project unresolved)
+    acct_ids = [tid for a in (fields.get("__srcid__account_ids") or [])
+                if (tid := ctx.id_map["account"].get(str(a))) is not None]
+    payload = {
+        "name": fields.get("name"),
+        "project_id": proj_new,
+        "account_ids": acct_ids,
+        "aws_iam_path": fields.get("aws_iam_path") or "",
+        "aws_iam_role_name": fields.get("aws_iam_role_name"),
+        "apply_to_all_accounts": bool(fields.get("apply_to_all_accounts")),
+        "future_accounts": bool(fields.get("future_accounts")),
+        "long_term_access_keys": bool(fields.get("long_term_access_keys")),
+        "short_term_access_keys": bool(fields.get("short_term_access_keys")),
+        "web_access": bool(fields.get("web_access")),
+    }
+    return ["/v3/project-cloud-access-role"], payload
+
+
+def _project_note_payload(fields, ctx):
+    """project_id (optional per the schema slice -- unlike ou_note's required
+    ou_id) resolves the same id_map way; unresolved just omits the field
+    rather than skipping the whole record. create_user_id falls back to the
+    running import user when available, but -- unlike ou_note -- is not
+    forced (the schema marks it optional), so a None current_user_id simply
+    omits the field instead of skipping the record."""
+    label = f"project note '{fields.get('name') or fields.get('__srcid__project_id')}'"
+    proj_src = fields.get("__srcid__project_id")
+    proj_new = ctx.id_map["project"].get(str(proj_src)) if proj_src not in (None, 0) else None
+    payload = {
+        "name": fields.get("name") or "",
+        "text": fields.get("text") or "",
+    }
+    if proj_new is not None:
+        payload["project_id"] = proj_new
+    if ctx.current_user_id is not None:
+        payload["create_user_id"] = ctx.current_user_id
+    return ["/v3/project-note"], payload
+
+
+def _service_catalog_payload(fields, ctx):
+    """account_id is the one required reference (same pattern as ami).
+    portfolio_id/region are opaque AWS-side data, passed through verbatim."""
+    label = f"service catalog '{fields.get('name')}'"
+    account_new = ctx.id_map["account"].get(str(fields.get("__srcid__account_id")))
+    if account_new is None:
+        return None  # caller will skip (required account unresolved)
+    uids, gids = ctx.resolve_owners(fields, label)
+    payload = {
+        "name": fields.get("name"),
+        "account_id": account_new,
+        "portfolio_id": fields.get("portfolio_id"),
+        "region": fields.get("region"),
+        "description": fields.get("description") or "",
+        "owner_user_ids": uids,
+        "owner_user_group_ids": gids,
+    }
+    if fields.get("tag_option") is not None:
+        payload["tag_option"] = fields["tag_option"]
+    return ["/v3/service-catalog"], payload
+
+
+def _service_control_policy_payload(fields, ctx):
+    """Minimal hook, modeled directly on _funding_source_payload/_project_payload
+    (the optional-owners variant -- no running-user fallback requirement)."""
+    label = f"service control policy '{fields.get('name')}'"
+    uids, gids = ctx.resolve_owners(fields, label)
+    payload = {
+        "name": fields.get("name"),
+        "description": fields.get("description") or "",
+        "policy": fields.get("policy"),
+        "owner_user_ids": uids,
+        "owner_user_group_ids": gids,
+    }
+    return ["/v3/service-control-policy"], payload
+
+
+def _user_group_payload(fields, ctx):
+    """idms_id is required with no running-user-style fallback (an identity
+    provider id, not an owner) -- unresolved skips the record. viewer_user_ids/
+    viewer_user_group_ids and the plain user_ids membership list are
+    deliberately omitted -- see the batch-level comment above."""
+    label = f"user group '{fields.get('name')}'"
+    idms_new = ctx.id_map["idms"].get(str(fields.get("__srcid__idms_id")))
+    if idms_new is None:
+        return None  # caller will skip (required idms unresolved)
+    uids, gids = ctx.resolve_owners(fields, label)
+    payload = {
+        "name": fields.get("name"),
+        "idms_id": idms_new,
+        "description": fields.get("description") or "",
+        "owner_user_ids": uids,
+        "owner_user_group_ids": gids,
+    }
+    return ["/v3/user-group"], payload
+
+
 HOOKS = {
     "account": Hooks(
         build_create_payload=_account_payload,
@@ -485,4 +767,16 @@ HOOKS = {
     "billing_source": Hooks(build_create_payload=_billing_source_payload),
     "budget": Hooks(reconcile_override=_budget_reconcile, skip_target_index=True),
     "scope": Hooks(reconcile_override=_scope_reconcile),
+    "ami": Hooks(build_create_payload=_ami_payload),
+    "azure_role": Hooks(build_create_payload=_azure_role_payload),
+    "cft": Hooks(build_create_payload=_cft_payload),
+    "compliance_standard": Hooks(build_create_payload=_compliance_standard_payload),
+    "iam_policy": Hooks(build_create_payload=_iam_policy_payload),
+    "ou_cloud_access_role": Hooks(build_create_payload=_ou_cloud_access_role_payload),
+    "ou_note": Hooks(build_create_payload=_ou_note_payload),
+    "project_cloud_access_role": Hooks(build_create_payload=_project_cloud_access_role_payload),
+    "project_note": Hooks(build_create_payload=_project_note_payload),
+    "service_catalog": Hooks(build_create_payload=_service_catalog_payload),
+    "service_control_policy": Hooks(build_create_payload=_service_control_policy_payload),
+    "user_group": Hooks(build_create_payload=_user_group_payload),
 }

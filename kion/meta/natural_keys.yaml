@@ -5,3 +5,33 @@ project:        {kind: name_in_parent, parent_field: ou_id}
 budget:         {kind: date_range}          # (start_datecode, end_datecode); scope is bound in the budget reconcile_override's state key
 account:        {kind: account_number}
 scope:          {kind: name_in_parent, parent_field: project_id}
+
+# ---------------------------------------------------------------------------
+# Onboarded resources (49-resource metadata sweep, feature/engine-onboard-resources).
+# Source: .superpowers/onboard/proposals/*.json (one proposal per resource).
+# ONLY resources classified "generic" are listed here -- they're copyable via
+# the existing metadata-driven engine alone (natural key + references.yaml
+# remap, no bespoke code) and are therefore safe for a live `--engine` run
+# today. The 21 "hook" + 1 "read_transform" resources from the same sweep have
+# NO hook registered in kion/overrides/registry.py yet, so their metadata
+# lives in kion/meta/natural_keys.staged.yaml instead -- adding them here
+# would make engine_meta() treat them as engine-ready and the generic
+# reconcile path would mis-copy them (unmapped owners, dropped type-specific
+# nesting, wrong payload shape). See docs/ONBOARDING_REPORT.md for the full
+# classification table and the staged worklist.
+# ---------------------------------------------------------------------------
+
+# -- classification: generic (copyable by the existing metadata-driven path) --
+# NOTE: compliance_family/compliance_level were originally listed here too, but
+# a live smoke test found their derived list-read endpoints (GET
+# /v4/compliance/family, /v4/compliance/level -- read_path with {id} stripped)
+# return HTTP 405: there is no flat list endpoint, only the parent-scoped
+# GET /v4/compliance/program/{id}/family|level. Reclassified read_transform and
+# moved to kion/meta/natural_keys.staged.yaml -- see that file for detail.
+app_api_key:        {kind: name}
+app_role:            {kind: name}
+billing_rule:        {kind: name}
+category:            {kind: name}
+compliance_program:  {kind: name}
+idms:                {kind: name}
+webhook:             {kind: name}
