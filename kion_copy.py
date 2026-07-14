@@ -51,7 +51,12 @@ def cmd_import(args) -> int:
             id_map = json.load(f)
         print(f"Loaded state from {args.id_map}")
 
-    importer = Importer(client, cfg, snapshot, apply=args.apply, id_map=id_map)
+    try:
+        importer = Importer(client, cfg, snapshot, apply=args.apply, id_map=id_map,
+                            only=args.only)
+    except ValueError as e:
+        print(f"\nERROR: invalid --only: {e}", file=sys.stderr)
+        return 2
     try:
         result = importer.run()
     except KionAPIError as e:
@@ -81,6 +86,10 @@ def main() -> int:
     pi.add_argument("--snapshot", default="snapshot.json", help="snapshot file (default: snapshot.json)")
     pi.add_argument("--id-map", default="id-map.json", help="state file: old->new id map (default: id-map.json)")
     pi.add_argument("--apply", action="store_true", help="make changes (default: plan only, no writes)")
+    pi.add_argument("--only", default=None,
+                    help="comma-separated entity kinds to sync instead of all "
+                         "(billing_sources,ous,funding_sources,projects,budgets,accounts,scopes). "
+                         "e.g. --only billing_sources,accounts")
     pi.set_defaults(func=cmd_import)
 
     args = parser.parse_args()
