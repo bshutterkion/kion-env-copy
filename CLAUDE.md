@@ -186,8 +186,8 @@ the metadata layers, each hook type, and the "add a resource" recipe:
 
 ## Out of scope (not copied)
 
-Cloud accounts, cloud rules, labels, custom variables, compliance, app-role
-permission mappings. The tool copies org/financial structure only.
+Cloud rules, labels, custom variables, compliance, app-role permission
+mappings. The tool copies org/financial structure only.
 
 ## Conventions
 

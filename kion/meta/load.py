@@ -30,16 +30,19 @@ def _yaml(vendor_dir, name):
     with open(os.path.join(vendor_dir, name)) as f:
         return yaml.safe_load(f) or {}
 
-# Read/create paths for resources the engine needs but the VENDORED
+# Read paths for resources the engine needs but the VENDORED
 # generator_config.yaml doesn't describe under that exact name — supplied here so
 # we never edit the vendored files. ``account`` is incomplete in codegen (its
 # records are a union of /v3/account + /v3/account-cache assembled in
 # kion.engine.inventory._read_accounts), so it only needs a list read_path to be
-# picked up by build_inventory / _index_target.
+# picked up by build_inventory / _index_target. It carries no create_path/method:
+# account creates go through the ``build_create_payload`` hook
+# (kion.overrides.registry._account_payload), which routes to the project or
+# account-cache endpoint per record — the generic ``rm.create_path`` path is
+# never reached for account.
 READ_OVERRIDES: dict[str, dict] = {
     "account": {
         "read_path": "/v3/account", "read_method": "GET",
-        "create_path": "/v3/account", "create_method": "POST",
     },
 }
 

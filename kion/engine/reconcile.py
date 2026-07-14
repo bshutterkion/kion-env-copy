@@ -164,6 +164,16 @@ class EngineReconciler:
         for res in self.inventory:
             rm = self.meta[res]
 
+            hooks = HOOKS.get(res)
+            if hooks is not None and hooks.skip_target_index:
+                # budget: its reconcile_override reads target budgets per-scope
+                # (_target_budgets_for) and never consumes the generic
+                # _t_key/_t_ids index, so the global-list GET this would issue
+                # is useless -- and emits a misleading 'target budget list
+                # failed' warning when /v3/budget isn't a valid list endpoint.
+                # Skip indexing it (scope keeps its index -- see Hooks docstring).
+                continue
+
             if res == "billing_source":
                 # A RAW /v4/billing-source record has no top-level ``name`` --
                 # it's nested under aws_payer/gcp_payer/azure_payer/oci_payer/
@@ -177,7 +187,20 @@ class EngineReconciler:
                 # _export_billing_sources), which flattens the name to a
                 # top-level field, so the target index is symmetric with how
                 # the source side is read.
-                records = _export_billing_sources(self.client)
+                #
+                # Parity with the generic path's on_error hook: surface a read
+                # failure into self.warnings (not only export's stderr _warn),
+                # so a billing_source index that came back empty because the
+                # target read FAILED is diagnosable, not silently
+                # indistinguishable from "genuinely zero billing sources".
+                # Best-effort: _export_billing_sources catches its own list GET
+                # today, but wrapping keeps this branch consistent if it ever
+                # propagates.
+                try:
+                    records = _export_billing_sources(self.client)
+                except KionAPIError as e:
+                    self.warnings.append(f"target billing_source list failed: {e.status}")
+                    records = []
                 key_map, ids = {}, set()
                 for rec in records:
                     rid = rec.get("source_id")

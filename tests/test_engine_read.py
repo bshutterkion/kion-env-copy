@@ -5,7 +5,7 @@ from kion.engine.read import list_records
 
 class PagedClient:
     """Serves an {items,total} envelope one page at a time, keyed by the
-    ``page`` param (page 1 is the initial param-free request)."""
+    ``page`` param (page 1 is the first request, now sent with params)."""
     def __init__(self, pages):
         self.pages = pages
         self.calls = []
@@ -24,10 +24,12 @@ def test_list_records_collects_all_pages():
     c = PagedClient(pages)
     recs = list_records(c, "/beta/scope")
     assert [r["id"] for r in recs] == [1, 2, 3, 4]
-    # first request is param-free (the bare-list contract both call sites rely on)
-    assert c.calls[0] == ("/beta/scope", None)
-    # a second, paged request was made
-    assert len(c.calls) == 2 and c.calls[1][1]["page"] == 2
+    # first request sends page=1,count=100 -- mirrors the oracle's paginated
+    # readers (export._export_scopes / import_._list_scopes) exactly (item G)
+    assert c.calls[0] == ("/beta/scope", {"page": 1, "count": 100})
+    # a second, paged request was made at the same page size
+    assert len(c.calls) == 2
+    assert c.calls[1][1] == {"page": 2, "count": 100}
 
 
 def test_list_records_bare_list_single_request():

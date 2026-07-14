@@ -120,7 +120,7 @@ def test_index_target_only_scans_inventory_resources():
     class FakeClient:
         def __init__(self):
             self.calls = []
-        def get(self, path):
+        def get(self, path, params=None):
             self.calls.append(path)
             return {"data": []}
 
@@ -194,7 +194,7 @@ def test_index_target_skips_ctx_reads_when_config_none():
     calls = []
 
     class Client:
-        def get(self, path):
+        def get(self, path, params=None):
             calls.append(path)
             return {"data": []}
 
@@ -245,6 +245,70 @@ def test_index_target_billing_source_indexes_by_flattened_name():
     # the bug this guards against: a raw-record index would have collapsed
     # both into a single ("",) key instead of the two flattened-name keys.
     assert ("",) not in r._t_key["billing_source"]
+
+
+def test_index_target_skips_generic_index_for_skip_target_index_resource():
+    """budget's reconcile_override reads target budgets per-scope
+    (_target_budgets_for) and never consumes the generic _t_key/_t_ids index, so
+    _index_target must NOT issue the useless /v3/budget global-list GET (which
+    also emits a misleading 'target budget list failed' warning when /v3/budget
+    isn't a valid list endpoint). scope ALSO has a reconcile_override but
+    genuinely uses _t_key['scope'], so it must still be indexed (item A)."""
+    class Client:
+        def __init__(self):
+            self.calls = []
+
+        def get(self, path, params=None):
+            self.calls.append(path)
+            return []
+
+    budget_m = M(); budget_m.read_path = "/v3/budget/{id}"; budget_m.ignores = []
+    budget_m.archetype = "entity"; budget_m.name = "budget"
+    scope_m = M(); scope_m.read_path = "/beta/scope/{id}"; scope_m.ignores = []
+    scope_m.archetype = "entity"; scope_m.name = "scope"
+
+    inv = {"budget": [], "scope": []}
+    client = Client()
+    r = EngineReconciler(
+        client=client, config=None, inventory=inv,
+        meta={"budget": budget_m, "scope": scope_m},
+        refs={"budget": [], "scope": []},
+        nkeys={"budget": {"kind": "date_range"},
+               "scope": {"kind": "name_in_parent", "parent_field": "project_id"}},
+        apply=False)
+    r._index_target()
+    # budget carries skip_target_index -> no global-list GET, no index built
+    assert "/v3/budget" not in client.calls
+    assert "budget" not in r._t_key
+    assert not any("target budget list failed" in w for w in r.warnings)
+    # scope's reconcile_override DOES consume _t_key['scope'] -> still indexed
+    assert "/beta/scope" in client.calls
+    assert r._t_key["scope"] == {}
+
+
+def test_index_target_warns_on_billing_source_read_failure(monkeypatch):
+    """The billing_source special-case reads via export._export_billing_sources,
+    which normally swallows its own list GET failure. If it ever propagates a
+    KionAPIError, _index_target must surface it into self.warnings (parity with
+    the generic path's on_error), not let the branch blow up or index nothing
+    silently (item F)."""
+    from kion.client import KionAPIError
+
+    def boom(client):
+        raise KionAPIError(503, "GET", "/v4/billing-source", "unavailable")
+
+    monkeypatch.setattr(reconcile_mod, "_export_billing_sources", boom)
+
+    m = M(); m.read_path = "/v4/billing-source"; m.ignores = []
+    m.archetype = "entity"; m.name = "billing_source"
+    r = EngineReconciler(client=None, config=None,
+                         inventory={"billing_source": []},
+                         meta={"billing_source": m}, refs={"billing_source": []},
+                         nkeys={"billing_source": {"kind": "name"}}, apply=False)
+    r._index_target()
+    assert r._t_key["billing_source"] == {}
+    assert r._t_ids["billing_source"] == set()
+    assert any("target billing_source list failed: 503" in w for w in r.warnings)
 
 
 def test_index_target_warns_on_target_list_failure():
@@ -477,6 +541,57 @@ def test_index_target_prepopulates_t_acct_from_existing_accounts():
     # t_acct_by_number's associated-wins setdefault above)
     assert r._t_key["account"] == {("111",): 1, ("222",): 4, ("333",): 3}
     assert r._t_ids["account"] == {1, 2, 3, 4}
+
+
+def test_resolve_scheme_unresolved_returns_none_and_warns():
+    """resolve_scheme's 'unresolved' branch (item H): the named scheme isn't on
+    target, there's no per-type default scheme on target, and no configured
+    DEFAULT -> returns (None, 'unresolved') and appends the 'no permission
+    scheme resolvable' warning naming the missing type default."""
+    r = EngineReconciler(client=None, config=None, inventory={}, meta={},
+                         refs={}, nkeys={}, apply=False)
+    r.schemes = {}                       # nothing on the target
+    sid, status = r.resolve_scheme("Nonexistent", "ou", "ou 'X'")
+    assert sid is None
+    assert status == "unresolved"
+    assert any("no permission scheme resolvable" in w for w in r.warnings)
+    # names the stock per-type default it looked for and the missing DEFAULT
+    assert any("Default OU Permissions Scheme" in w and "no DEFAULT" in w
+               for w in r.warnings)
+
+
+def test_post_apply_mode_success_then_failure(monkeypatch):
+    """(item H, optional) In apply mode _post returns the created record_id and
+    counts a create on success; on a KionAPIError it returns None, counts a
+    failure, appends a '<action> failed' warning, and records _last_error."""
+    from kion.client import KionAPIError
+
+    r = EngineReconciler(client=None, config=None, inventory={"thing": []},
+                         meta=_meta(), refs={"thing": []},
+                         nkeys={"thing": {"kind": "name"}}, apply=True)
+
+    class OKClient:
+        def post(self, path, json=None):
+            return {"record_id": 4242}
+
+    r.client = OKClient()
+    new_id = r._post("thing", "/v3/x", {"name": "A"}, 1, "create", "thing 'A'")
+    assert new_id == 4242
+    assert r.counts["thing"]["create"] == 1
+    assert r.failed["thing"] == 0
+    assert r._last_error is None
+
+    class FailClient:
+        def post(self, path, json=None):
+            raise KionAPIError(400, "POST", path, "bad request")
+
+    r.client = FailClient()
+    new_id2 = r._post("thing", "/v3/x", {"name": "B"}, 2, "create", "thing 'B'")
+    assert new_id2 is None
+    assert r.failed["thing"] == 1
+    assert r.counts["thing"]["create"] == 1           # unchanged by the failure
+    assert any("thing 'B': create failed" in w for w in r.warnings)
+    assert r._last_error is not None and r._last_error.status == 400
 
 
 def test_reconciler_calls_hook_post_create_after_create(monkeypatch):

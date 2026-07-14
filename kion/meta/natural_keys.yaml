@@ -2,6 +2,6 @@ billing_source: {kind: name}
 ou:             {kind: name_in_parent, parent_field: parent_ou_id}
 funding_source: {kind: name}
 project:        {kind: name_in_parent, parent_field: ou_id}
-budget:         {kind: date_range}          # (scope, start_datecode, end_datecode)
+budget:         {kind: date_range}          # (start_datecode, end_datecode); scope is bound in the budget reconcile_override's state key
 account:        {kind: account_number}
 scope:          {kind: name_in_parent, parent_field: project_id}

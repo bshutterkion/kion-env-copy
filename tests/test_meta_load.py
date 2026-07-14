@@ -1,5 +1,6 @@
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from kion.engine.setup import engine_meta
 from kion.meta.load import load_resource_meta
 
 def test_loads_entity_ops():
@@ -16,3 +17,14 @@ def test_loads_compound_archetype():
     assert sc.archetype == "compound_key_parent_read"
     assert sc.parent_id_field == "scope_id"
     assert sc.collection == "CriteriaRecords"
+
+def test_engine_meta_returns_the_seven_onboarded_resources():
+    """The shared bootstrap (item B: one impl for kion_copy + equivalence_check)
+    returns meta/refs/nkeys plus the usable resource set -- the intersection of
+    ResourceMeta and natural-key specs, which is exactly the 7 onboarded kinds."""
+    meta, refs, nkeys, resources = engine_meta()
+    assert resources == sorted(
+        ["account", "billing_source", "budget", "funding_source",
+         "ou", "project", "scope"])
+    # every returned resource has both a ResourceMeta and a natural-key spec
+    assert all(r in meta and r in nkeys for r in resources)
