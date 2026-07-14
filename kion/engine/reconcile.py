@@ -69,6 +69,7 @@ class EngineReconciler:
 
         self._placeholder = 0
         self._pinned_path: dict = {}
+        self._last_error = None       # last KionAPIError from _post (for diagnostics)
         self.warnings: list[str] = []
         # counts[res][action], skipped[res], failed[res] — same shape as Importer.
         self.counts = {res: dict.fromkeys(ACTIONS, 0) for res in inventory}
@@ -93,6 +94,7 @@ class EngineReconciler:
         ``Importer._post``: ``path`` may be a list of candidate endpoints tried
         in order, with the first success pinned for the rest of the run."""
         paths = [path] if isinstance(path, str) else list(path)
+        self._last_error = None
         if not self.apply:
             print(f"  ~ {action} {label}")
             self.counts[res][action] += 1
@@ -111,6 +113,7 @@ class EngineReconciler:
             print(f"  + {action} {label} -> id {new_id}")
             self.counts[res][action] += 1
             return new_id
+        self._last_error = last_err
         self.warnings.append(f"{label}: {action} failed: {last_err}")
         self.failed[res] += 1
         return None
@@ -244,10 +247,26 @@ class EngineReconciler:
         return {(res, k): tid for res, kmap in self._t_key.items() for k, tid in kmap.items()}
 
     # -- reconcile ------------------------------------------------------------
+    def _note_ok(self, res: str, label: str):
+        """OK: already mapped and still present -> nothing. Mirrors
+        ``Importer._note_ok`` (used by the budget override, whose OK check runs
+        outside the generic per-record loop)."""
+        self.counts[res]["ok"] += 1
+
     def _reconcile(self, res: str):
         rm = self.meta[res]
         refs = self.refs.get(res, [])
         hooks = HOOKS.get(res)
+
+        # Whole-resource override (10e): budget can't be reconciled by the generic
+        # list+natural-key path (its identity is (target scope, start, end) and
+        # adoption is read per-scope). When present the override owns the entire
+        # reconcile (adopt/create/skip + counts) and we return; the generic path
+        # below is byte-for-byte unchanged for every resource without one.
+        if hooks and hooks.reconcile_override is not None:
+            hooks.reconcile_override(self, self.inventory.get(res, []))
+            return
+
         t_key = self._t_key.setdefault(res, {})
         t_ids = self._t_ids.setdefault(res, set())
         id_map = self.id_map.setdefault(res, {})
