@@ -1,6 +1,78 @@
 # Resource Onboarding Report — metadata sweep (feature/engine-onboard-resources)
 
-## Status (corrective pass)
+## Status (final)
+
+This report went through two corrective passes after the original sweep.
+The first fixed a safety gap (see "Status (corrective pass, superseded)"
+below, kept for history): it had added `natural_keys.yaml`/`references.yaml`
+entries for **all** 30 non-skip resources it analyzed, making every one of
+them appear in `engine_meta()`'s active `--engine` resource set even though
+only resources classified **generic** are actually safe to reconcile that
+way (see "Why the safety gate exists" below). The second, later pass ran a
+live read-only smoke test against every ACTIVE resource and found that
+`compliance_family`/`compliance_level`'s derived list-read endpoints (`GET
+/v4/compliance/family`, `GET /v4/compliance/level`) return **HTTP 405** —
+there is no flat list endpoint, only a parent-scoped `GET
+/v4/compliance/program/{id}/family|level` (confirmed against
+`kion/meta/vendor/generator_config.yaml`'s nested read config). Both were
+reclassified `generic` → `read_transform` and moved from the active files to
+the staged ones, annotated `# staged: list read 405s (no flat list
+endpoint) — needs a parent-scoped reader`. See "Live read smoke (active
+resources)" and "Live inventory validation" below for the original find, and
+`.superpowers/onboard/proposals/compliance_family.json` /
+`compliance_level.json` for the corrected proposal record.
+
+Separately, 12 of the 22 originally-staged hook/read_transform resources now
+have **draft `build_create_payload` hooks** committed in
+`kion/overrides/registry.py` (with unit tests in
+`tests/test_onboarded_hooks.py`) — see "Hooks implemented (this pass)"
+below. These hooks are **inert, DRAFT, and UNVERIFIED against a live
+install**: they are unit-tested against a fake context only, several rely on
+owner data (`owner_user_ids`/`owner_user_group_ids`) that the generic
+list-read this engine uses at export time does not actually populate (a
+per-record detail read would be needed to capture it, which no reader
+currently performs), and none of their resources have been promoted to the
+active metadata files — promotion requires a separate, reviewed pass that
+also does the live-API verification this draft skipped.
+
+| set | count | where | safe for `--engine` today? |
+|---|---|---|---|
+| **ACTIVE** | 7 generic (+ the original 7 = **14** engine-ready resources total) | `kion/meta/natural_keys.yaml`, `kion/meta/references.yaml` | **yes** |
+| **STAGED** | 21 hook + 3 read_transform = **24** (12 of the 21 hook resources have draft, unverified, inert hooks in `registry.py`; the rest have none) | `kion/meta/natural_keys.staged.yaml`, `kion/meta/references.staged.yaml` (NOT loaded by `load.py`/`setup.py`) | **no** — needs a hook (and, for `compliance_family`/`compliance_level`/`user`, a reader) verified live, then promotion |
+| **SKIP** | 18 | this report only (no metadata written anywhere) | n/a — not onboardable as-is |
+| **total** | **49** | | |
+
+The 7 ACTIVE generic resources: `app_api_key`, `app_role`, `billing_rule`,
+`category`, `compliance_program`, `idms`, `webhook`. Together with the
+original 7 (`billing_source`, `ou`, `funding_source`, `project`, `budget`,
+`account`, `scope`) these are the full **14**-resource set a live `--engine`
+run walks today.
+
+Source: `.superpowers/onboard/proposals/*.json`, one proposal file per
+candidate resource, each produced by an analysis pass over
+`kion/meta/vendor/generator_config.yaml`, `crud_archetypes.yaml`, and
+`memberships.yaml` plus (where available) live-API verification notes. This
+report synthesizes those 49 proposals into the active + staged metadata files
+above.
+
+**Note on the count**: an earlier version of this report noted the task
+description referred to "49 Kion provider resources" while only 46 proposal
+files existed. That gap is now closed: `permission_scheme`,
+`project_cloud_access_role_exemption`, and `project_enforcement` were
+analyzed in an earlier corrective pass (see their sections below), bringing
+`.superpowers/onboard/proposals/*.json` to exactly **49** files
+(`ls .superpowers/onboard/proposals/*.json | wc -l` → 49). The total stays 49
+through the `compliance_family`/`compliance_level` reclassification below —
+only the generic/read_transform split within that total changed (9→7
+generic, 1→3 read_transform).
+
+## Status (corrective pass, superseded)
+
+The paragraph and table below are the *original* corrective-pass status,
+kept verbatim for history. It is superseded by "Status (final)" above,
+which additionally moves `compliance_family`/`compliance_level` out of the
+ACTIVE generic set (405 list-read finding) and records the draft-hook
+commit. Where the two disagree, "Status (final)" is correct.
 
 This report was corrected after an initial sweep left a safety gap: it added
 `natural_keys.yaml`/`references.yaml` entries for **all** 30 non-skip
@@ -21,34 +93,17 @@ STAGED set (metadata captured, but inert until a hook is implemented).
 | **SKIP** | 18 | this report only (no metadata written anywhere) | n/a — not onboardable as-is |
 | **total** | **49** | | |
 
-The 9 ACTIVE generic resources: `app_api_key`, `app_role`, `billing_rule`,
-`category`, `compliance_family`, `compliance_level`, `compliance_program`,
-`idms`, `webhook`. Together with the original 7 (`billing_source`, `ou`,
-`funding_source`, `project`, `budget`, `account`, `scope`) these are the full
-16-resource set a live `--engine` run walks today.
-
-Source: `.superpowers/onboard/proposals/*.json`, one proposal file per
-candidate resource, each produced by an analysis pass over
-`kion/meta/vendor/generator_config.yaml`, `crud_archetypes.yaml`, and
-`memberships.yaml` plus (where available) live-API verification notes. This
-report synthesizes those 49 proposals into the active + staged metadata files
-above.
-
-**Note on the count**: an earlier version of this report noted the task
-description referred to "49 Kion provider resources" while only 46 proposal
-files existed. That gap is now closed: `permission_scheme`,
-`project_cloud_access_role_exemption`, and `project_enforcement` were
-analyzed in this corrective pass (see their sections below), bringing
-`.superpowers/onboard/proposals/*.json` to exactly **49** files
-(`ls .superpowers/onboard/proposals/*.json | wc -l` → 49).
+The 9 ACTIVE generic resources (superseded, see above): `app_api_key`,
+`app_role`, `billing_rule`, `category`, `compliance_family`,
+`compliance_level`, `compliance_program`, `idms`, `webhook`.
 
 ## Classification summary
 
 | classification | count | meaning |
 |---|---|---|
-| generic | 9 | copyable via the existing metadata-driven engine alone (natural key + `references.yaml` remap, no bespoke code) — **ACTIVE** |
-| hook | 21 | needs a `build_create_payload` (and often a paired export-side owner/email capture) hook in `kion/overrides/registry.py` before it can be reconciled correctly — **STAGED** |
-| read_transform | 1 | needs a bespoke inventory reader to synthesize an identity field before the generic `natural_key()` applies (`user`: `name := username`) — **STAGED** |
+| generic | 7 | copyable via the existing metadata-driven engine alone (natural key + `references.yaml` remap, no bespoke code) — **ACTIVE** |
+| hook | 21 | needs a `build_create_payload` (and often a paired export-side owner/email capture) hook in `kion/overrides/registry.py` before it can be reconciled correctly — **STAGED** (12 have a draft, unverified hook in `registry.py`; 9 have none) |
+| read_transform | 3 | needs a bespoke inventory reader before the generic `natural_key()`/reconcile path applies — `user`: synthesize `name := username`; `compliance_family`/`compliance_level`: parent-scoped list read (`GET /v4/compliance/program/{id}/family\|level`) since the flat derived endpoint 405s — **STAGED** |
 | skip | 18 | not onboardable as-is -- no natural key expressible in the engine's 4 supported kinds (`name`, `name_in_parent`, `account_number`, `date_range`), out of scope per CLAUDE.md, or needs a new engine mechanism (e.g. `no_read`/`association`/`parent_list` archetypes have no generic reconcile path today) |
 | **total** | **49** | |
 
@@ -84,6 +139,13 @@ pattern (see `kion/engine/reconcile.py`'s docstring on `account`'s hook
 landing before billing_source/budget/scope's did).
 
 ## What this sweep + corrective pass changed
+
+(This section describes the corrective pass as it stood before the later
+405-driven reclassification of `compliance_family`/`compliance_level` —
+counts below say "9 generic" / "21 hook + 1 read_transform" / "22 staged",
+which are now "7 generic" / "21 hook + 3 read_transform" / "24 staged". See
+"Status (final)" at the top of this report for the current truth; this
+section is kept as an accurate record of what that specific pass changed.)
 
 - `kion/meta/natural_keys.yaml` / `kion/meta/references.yaml`: contain
   **only** the original 7 entries plus the 9 **generic** resources. The
@@ -128,9 +190,13 @@ landing before billing_source/budget/scope's did).
   `test_proposal_count_and_classification_tally_matches_49` locks in the
   corrected 49-resource, 4-way tally.
 
-## Important: metadata alone does not make the 21 hook / 1 read_transform resources safe for a live `--engine` run yet
+## Important: metadata alone does not make the 21 hook / 3 read_transform resources safe for a live `--engine` run yet
 
-See "Status (corrective pass)" and "Why the safety gate exists" at the top of
+(Updated from "21 hook / 1 read_transform" — `compliance_family`/
+`compliance_level` were later reclassified generic → read_transform and
+moved here too; see "Status (final)" at the top of this report.)
+
+See "Status (final)" and "Why the safety gate exists" at the top of
 this report for the full explanation and the ACTIVE/STAGED/SKIP counts. Short
 version: adding a `natural_keys.yaml` entry is what makes a resource appear in
 `engine_meta()`'s `resources` set, which is what `kion_copy.py --engine` feeds
@@ -168,8 +234,8 @@ staged resources.
 | `cloud_rule` | hook | name | 14 | yes | Natural key is a clean standalone {kind: name} (name is required, top-level, no parent scoping). But the create payload has 12 id/id-array reference fields plus owner_user_ids/owner_user_group_ids, and one of those... |
 | `compliance_check` | hook | name | 0 | yes | Not listed in crud_archetypes.yaml (plain entity archetype: single-record read at /v3/compliance/check/{id}) and not listed in memberships.yaml (no separate owner add/remove endpoints for compliance_check specifically... |
 | `compliance_control` | hook | name | 6 | yes | Standalone (flat, non-nested) create/read paths give it a plausible {kind: name} identity, but the payload is dominated by six array-of-ids fields whose target resource types are only partly certain from the extracted... |
-| `compliance_family` | generic | name_in_parent(compliance_program_id) | 1 | no | Standard entity CRUD (single-record GET by id, POST create), not listed in crud_archetypes.yaml or memberships.yaml so it needs no special archetype or owner/membership handling. Its create payload is exactly... |
-| `compliance_level` | generic | name_in_parent(compliance_program_id) | 1 | no | Standalone entity CRUD: POST /v4/compliance/level to create, GET /v4/compliance/level/{id} to read a single record (not compound-key, not in crud_archetypes.yaml so it uses the default entity archetype). Create fields... |
+| `compliance_family` | read_transform (was generic; corrected) | name_in_parent(compliance_program_id) | 1 | yes | Create payload is plain (compliance_program_id, description, name) and needs no write-side transform. RECLASSIFIED after a live smoke test found the derived list-read (GET /v4/compliance/family) 405s -- no flat list endpoint exists, only GET /v4/compliance/program/{id}/family, parent-scoped per compliance_program. Needs a bespoke inventory reader (enumerate compliance_program, then list per-program), same shape as `user`'s read_transform... |
+| `compliance_level` | read_transform (was generic; corrected) | name_in_parent(compliance_program_id) | 1 | yes | Create payload is plain (name, description, compliance_program_id) and needs no write-side transform. RECLASSIFIED after a live smoke test found the derived list-read (GET /v4/compliance/level) 405s -- no flat list endpoint exists, only GET /v4/compliance/program/{id}/level, parent-scoped per compliance_program. Needs a bespoke inventory reader (enumerate compliance_program, then list per-program), same shape as `user`'s read_transform... |
 | `compliance_program` | generic | name | 0 | no | Standard single-record entity: POST /v4/compliance/program creates, GET /v4/compliance/program/{id} reads a single record (not listed in crud_archetypes.yaml, so it uses the default entity archetype — no compound key,... |
 | `compliance_standard` | hook | name | 2 | yes | Standalone entity (no ou_id/project_id in create_fields, no compound key) so the natural key is trivially {kind: name} -- not listed in crud_archetypes.yaml, so it is the plain entity archetype. But three fields make... |
 | `custom_variable` | hook | name | 0 | yes | Standalone, workspace-global resource with a clean {kind: name} identity and no bespoke identity/compound-key problem — but its create payload cannot be produced by the generic 'fields minus ignores, refs mapped to... |
@@ -206,9 +272,10 @@ staged resources.
 
 ## Hook / read_transform implementation worklist (next phase)
 
-The following 21 resources are onboarded at the metadata level (natural key +
-references, where applicable) but need a hook registered in
-`kion/overrides/registry.py`'s `HOOKS` (or, for `user`, a reader in
+The following 24 resources (21 hook + 3 read_transform) are onboarded at the
+metadata level (natural key + references, where applicable) but need a hook
+registered in `kion/overrides/registry.py`'s `HOOKS` (or, for `user` /
+`compliance_family` / `compliance_level`, a reader in
 `kion/engine/inventory.py`) before `--engine` reconciliation is correct for
 them. `hook_sketch` below is transcribed verbatim from each resource's
 proposal file -- it is a design sketch for the next phase, not implemented
@@ -248,6 +315,14 @@ build_create_payload(fields, ctx): start payload = {name, description, body} plu
 ### `compliance_control` (hook)
 
 build_create_payload must: (1) verify against a live install (not just swagger) what 'cloud_provider_policy_ids' actually references -- if it is a single homogeneous resource type, add it as a plain reference in references.yaml (best guess here is iam_policy, since Kion's generic 'IAM Policy' resource spans AWS and is the closest name match, but this is UNVERIFIED and could instead be per-provider heterogeneous, in which case per-element type detection against source records is required before remapping); (2) determine the shape of 'compliance_levels' (array of compliance_level ids vs array of {compliance_level_id, ...} objects) and remap accordingly -- do not pass through source ids unmodified; (3) decide which side owns the compliance_check<->compliance_control link, since compliance_check.compliance_control_ids and compliance_control.compliance_check_ids appear to be two views of the same association -- setting both independently risks conflicting/duplicate writes, pick one direction (recommend owning it from compliance_check, since compliance_check already needs its own hook for owner_user_ids/owner_user_group_ids) and drop compliance_check_ids from this resource's create payload; (4) fall back to 'title' for identity/display if 'name' is blank, since create_fields marks 'name' required:false which is unusual for a natural key and should be confirmed live; (5) the DELETE route's program_id requirement is out of scope for create/import but flags that controls may need a separate program-attach call this engine doesn't yet model -- confirm whether a freshly POSTed control (with only compliance_family_id set, no program_id) is fully usable on the target, or whether it remains orphaned until attached to a program some other way.
+
+### `compliance_family` (read_transform)
+
+RECLASSIFIED generic -> read_transform after a live smoke test found `GET /v4/compliance/family` (the flat list-read path the generic engine derives by stripping `{id}` off `read_path`) returns HTTP 405 -- confirmed by `kion/meta/vendor/generator_config.yaml`, which separately documents the real list endpoint as parent-scoped: `GET /v4/compliance/program/{id}/family`. The create payload itself is unaffected and stays generic-shaped (`{compliance_program_id, description, name}`, remapped via the existing `compliance_program_id -> compliance_program` reference already in `references.staged.yaml`) -- only the READ side needs a hook. Fix: add a `_read_compliance_families(client)` reader to `kion/engine/inventory.py` that enumerates `compliance_program` (already a working active reader) and, per program, calls the nested `GET /v4/compliance/program/{id}/family` endpoint, tagging each returned family with its parent `compliance_program_id` so the existing `name_in_parent` natural-key machinery can dedupe/match on `(name, compliance_program)`. Register the reader in `_EXPORT_READERS` and add a matching `EngineReconciler._index_target` branch that does the same nested enumeration against the target. No owner fields, no export.py changes beyond wiring the new reader in.
+
+### `compliance_level` (read_transform)
+
+Same finding and same fix shape as `compliance_family` immediately above: `GET /v4/compliance/level` 405s; the real endpoint is `GET /v4/compliance/program/{id}/level`, confirmed in `kion/meta/vendor/generator_config.yaml`. Create payload (`{name, description, compliance_program_id}`) is unaffected and generic-shaped. Fix: add a `_read_compliance_levels(client)` reader to `kion/engine/inventory.py` mirroring `_read_compliance_families` -- enumerate `compliance_program`, call the nested per-program `.../level` endpoint, tag with parent `compliance_program_id`, register in `_EXPORT_READERS`, add the matching `EngineReconciler._index_target` branch.
 
 ### `compliance_standard` (hook)
 
@@ -410,6 +485,12 @@ Result: **15 of 16 read cleanly with real data**; 2 of those 15 (`compliance_fam
 
 All other 14 active resources -- including all of the original 7 -- read cleanly with real, non-zero data (except `category`, which has exactly 1 record on demo1; that is genuine data, not an error) and required no code changes to confirm.
 
+**Follow-up resolved**: option (b) above was taken in a later pass --
+`compliance_family`/`compliance_level` were reclassified `generic` ->
+`read_transform` and moved to `natural_keys.staged.yaml` /
+`references.staged.yaml`. The active set is now 14 (7 original + 7 generic),
+not the 16 this section originally measured. See "Status (final)" at the top
+of this report.
 
 ## Equivalence regression check
 
@@ -605,7 +686,15 @@ resources)" and "Equivalence regression check" above from scratch, on branch
 hooks landed (previous section, "Hooks implemented (this pass)"). All checks
 were read-only; no writes were made to either install.
 
-**Unit suite**: `python -m pytest tests/ -q` — **251 passed**, 0 failed.
+(This section's snapshot still counts `compliance_family`/`compliance_level`
+among the "16 active" resources and recommends "parent-scoped list read or
+reclassification to hook/staged" below — that recommendation has since been
+acted on: both were reclassified `generic` → `read_transform` and moved to
+STAGED. See "Status (final)" at the top of this report; the active set is
+now 14, not 16.)
+
+**Unit suite**: `python -m pytest tests/ -q` — **251 passed**, 0 failed (at
+the time of this snapshot, before the reclassification below).
 
 **Live read-only smoke** (per-resource, `.env.source` = demo1): a throwaway,
 uncommitted script called `engine_meta()` for the active resource set, then

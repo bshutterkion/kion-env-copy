@@ -20,16 +20,14 @@ scope:
 # "generic" are listed here -- see kion/meta/natural_keys.yaml's matching
 # banner and docs/ONBOARDING_REPORT.md for why the "hook"/"read_transform"
 # resources' references live in kion/meta/references.staged.yaml instead.
-# Of the 9 generic resources, billing_rule, category, compliance_family, and
-# compliance_level have reference fields; the rest (app_api_key, app_role,
-# compliance_program, idms, webhook) have none and so get no entry here, same
-# convention as the original file.
+# Of the 7 generic resources, billing_rule and category have reference fields;
+# the rest (app_api_key, app_role, compliance_program, idms, webhook) have
+# none and so get no entry here, same convention as the original file.
+# compliance_family/compliance_level were moved to
+# kion/meta/references.staged.yaml -- see kion/meta/natural_keys.yaml's
+# matching note for why (405 on their derived list-read endpoint).
 # ---------------------------------------------------------------------------
 billing_rule:
   - {field: billing_source_ids, target: billing_source, key: name, many: true, optional: false}
 category:
   - {field: payer_id, target: billing_source, key: name, optional: true}
-compliance_family:
-  - {field: compliance_program_id, target: compliance_program, key: name, optional: false}
-compliance_level:
-  - {field: compliance_program_id, target: compliance_program, key: name, optional: false}

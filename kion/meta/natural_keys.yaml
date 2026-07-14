@@ -22,12 +22,16 @@ scope:          {kind: name_in_parent, parent_field: project_id}
 # ---------------------------------------------------------------------------
 
 # -- classification: generic (copyable by the existing metadata-driven path) --
+# NOTE: compliance_family/compliance_level were originally listed here too, but
+# a live smoke test found their derived list-read endpoints (GET
+# /v4/compliance/family, /v4/compliance/level -- read_path with {id} stripped)
+# return HTTP 405: there is no flat list endpoint, only the parent-scoped
+# GET /v4/compliance/program/{id}/family|level. Reclassified read_transform and
+# moved to kion/meta/natural_keys.staged.yaml -- see that file for detail.
 app_api_key:        {kind: name}
 app_role:            {kind: name}
 billing_rule:        {kind: name}
 category:            {kind: name}
-compliance_family:   {kind: name_in_parent, parent_field: compliance_program_id}
-compliance_level:    {kind: name_in_parent, parent_field: compliance_program_id}
 compliance_program:  {kind: name}
 idms:                {kind: name}
 webhook:             {kind: name}

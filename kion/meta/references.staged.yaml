@@ -61,6 +61,10 @@ user_group:
   - {field: idms_id, target: idms, key: name, optional: false}
 
 # -- classification: read_transform — see ONBOARDING_REPORT.md --
+compliance_family:
+  - {field: compliance_program_id, target: compliance_program, key: name, optional: false}
+compliance_level:
+  - {field: compliance_program_id, target: compliance_program, key: name, optional: false}
 user:
   - {field: idms_id, target: idms, key: name, optional: false}
   - {field: user_group_ids, target: user_group, key: name, many: true, optional: true}

@@ -79,12 +79,16 @@ def test_proposals_directory_is_non_empty():
 def test_proposal_count_and_classification_tally_matches_49():
     # Locks in the corrected count (49, not the earlier sweep's undercounted
     # 46) now that permission_scheme, project_cloud_access_role_exemption,
-    # and project_enforcement have been analyzed.
+    # and project_enforcement have been analyzed. compliance_family and
+    # compliance_level were later reclassified generic -> read_transform
+    # after a live smoke test found their list-read endpoint 405s (no flat
+    # list endpoint -- see docs/ONBOARDING_REPORT.md), so generic dropped
+    # from 9 to 7 and read_transform grew from 1 to 3; the total stays 49.
     assert len(_PROPOSALS) == 49
     tally = {}
     for d in _PROPOSALS.values():
         tally[d["classification"]] = tally.get(d["classification"], 0) + 1
-    assert tally == {"generic": 9, "hook": 21, "read_transform": 1, "skip": 18}
+    assert tally == {"generic": 7, "hook": 21, "read_transform": 3, "skip": 18}
 
 
 @pytest.mark.parametrize("resource", _GENERIC_RESOURCES)

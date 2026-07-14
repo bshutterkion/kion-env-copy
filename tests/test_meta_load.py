@@ -23,19 +23,23 @@ ORIGINAL_SEVEN = [
     "ou", "project", "scope",
 ]
 
-# 9 resources classified "generic" by the 49-resource metadata sweep
+# 7 resources classified "generic" by the 49-resource metadata sweep
 # (feature/engine-onboard-resources, .superpowers/onboard/proposals/*.json).
 # See docs/ONBOARDING_REPORT.md for the per-resource classification. These are
 # the ONLY sweep resources present in the active kion/meta/natural_keys.yaml /
 # references.yaml -- they're copyable via the existing metadata-driven engine
 # alone (natural key + references remap, no bespoke code), so they're safe for
-# a live `--engine` run today.
+# a live `--engine` run today. compliance_family/compliance_level were
+# originally classified "generic" too but a live smoke test found their
+# derived list-read endpoint 405s (no flat list endpoint -- only a
+# parent-scoped GET /v4/compliance/program/{id}/family|level); they were
+# reclassified "read_transform" and moved to STAGED_READ_TRANSFORM below.
 ONBOARDED_GENERIC = [
-    "app_api_key", "app_role", "billing_rule", "category", "compliance_family",
-    "compliance_level", "compliance_program", "idms", "webhook",
+    "app_api_key", "app_role", "billing_rule", "category",
+    "compliance_program", "idms", "webhook",
 ]
 
-# The 21 "hook" + 1 "read_transform" resources from the same sweep are
+# The 21 "hook" + 3 "read_transform" resources from the same sweep are
 # INTENTIONALLY NOT in kion/meta/natural_keys.yaml / references.yaml -- they
 # have no build_create_payload / reader hook registered in
 # kion/overrides/registry.py (or kion/engine/inventory.py) yet, so the generic
@@ -51,16 +55,16 @@ STAGED_HOOK = [
     "permission_scheme", "project_cloud_access_role", "project_note", "service_catalog",
     "service_control_policy", "user_group",
 ]
-STAGED_READ_TRANSFORM = ["user"]
+STAGED_READ_TRANSFORM = ["compliance_family", "compliance_level", "user"]
 STAGED_RESOURCES = STAGED_HOOK + STAGED_READ_TRANSFORM
 
 def test_engine_meta_returns_the_onboarded_resources():
     """The shared bootstrap (item B: one impl for kion_copy + equivalence_check)
     returns meta/refs/nkeys plus the usable resource set -- the intersection of
     ResourceMeta and natural-key specs. The 49-resource metadata sweep expanded
-    this from the original 7 to the original 7 plus the 9 "generic" resources
-    from that sweep -- the ACTIVE, engine-ready set. The 21 "hook" + 1
-    "read_transform" resources are staged (not active) until their
+    this from the original 7 to the original 7 plus the 7 "generic" resources
+    from that sweep -- the ACTIVE, engine-ready set (14 total). The 21 "hook"
+    + 3 "read_transform" resources are staged (not active) until their
     registry.py/inventory.py hooks land -- see docs/ONBOARDING_REPORT.md."""
     meta, refs, nkeys, resources = engine_meta()
     expected = sorted(ORIGINAL_SEVEN + ONBOARDED_GENERIC)

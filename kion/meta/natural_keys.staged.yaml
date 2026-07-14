@@ -14,8 +14,8 @@
 # This file exists purely to carry the already-analyzed natural-key specs
 # forward to the future hook-implementation pass so that work doesn't have to
 # re-derive them. Once a resource's hook lands in
-# kion/overrides/registry.py (or kion/engine/inventory.py for `user`'s
-# read_transform), move its entry from here into kion/meta/natural_keys.yaml.
+# kion/overrides/registry.py (or kion/engine/inventory.py for a read_transform
+# resource's reader), move its entry from here into kion/meta/natural_keys.yaml.
 #
 # See docs/ONBOARDING_REPORT.md for the full classification table and the
 # per-resource hook_sketch worklist (one section per resource below, keyed by
@@ -46,4 +46,6 @@ service_control_policy:    {kind: name}   # hook sketch: ONBOARDING_REPORT.md "#
 user_group:                {kind: name}   # hook sketch: ONBOARDING_REPORT.md "### `user_group` (hook)"
 
 # -- classification: read_transform — see ONBOARDING_REPORT.md --
+compliance_family: {kind: name_in_parent, parent_field: compliance_program_id}   # staged: list read 405s (no flat list endpoint) — needs a parent-scoped reader (GET /v4/compliance/program/{id}/family per compliance_program)
+compliance_level:  {kind: name_in_parent, parent_field: compliance_program_id}   # staged: list read 405s (no flat list endpoint) — needs a parent-scoped reader (GET /v4/compliance/program/{id}/level per compliance_program)
 user: {kind: name}   # hook sketch: ONBOARDING_REPORT.md "### `user` (read_transform)" -- identity field synthesized as name := username by a reader hook
