@@ -6,6 +6,14 @@ import yaml
 _VENDOR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vendor")
 
 @dataclass
+class Reference:
+    field: str
+    target: str
+    key: str
+    many: bool = False
+    optional: bool = False
+
+@dataclass
 class ResourceMeta:
     name: str
     create_path: str | None = None
@@ -44,3 +52,12 @@ def load_resource_meta(vendor_dir: str | None = None) -> dict[str, ResourceMeta]
             m.collection = a.get("collection")
         out[name] = m
     return out
+
+def load_references(path: str | None = None) -> dict[str, list[Reference]]:
+    path = path or os.path.join(os.path.dirname(os.path.abspath(__file__)), "references.yaml")
+    raw = _yaml(os.path.dirname(path), os.path.basename(path))
+    return {res: [Reference(**r) for r in lst] for res, lst in raw.items()}
+
+def load_natural_keys(path: str | None = None) -> dict[str, dict]:
+    path = path or os.path.join(os.path.dirname(os.path.abspath(__file__)), "natural_keys.yaml")
+    return _yaml(os.path.dirname(path), os.path.basename(path))
