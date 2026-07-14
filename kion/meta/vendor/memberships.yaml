@@ -1,0 +1,105 @@
+# Owner/member associations that Kion manages via SEPARATE add/remove endpoints
+# rather than the main update body. The generated Create sets initial values (the
+# create body carries them), but the main PATCH does NOT — so the entity Update
+# must diff prior state vs plan and call the add/remove endpoints. Without this,
+# changing an owner on an existing resource is a silent no-op.
+#
+# owners: one add (Post*Owners) + one remove (Delete*Owners) endpoint taking a
+# {owner_user_ids, owner_user_group_ids} struct body (uniform across the SDK).
+resources:
+  azure_policy:
+    owners:
+      user_field: owner_users
+      group_field: owner_user_groups
+      add: PostAzurePolicyOwners
+      remove: DeleteAzurePolicyOwners
+      body: AzurePolicyDefinitionOwners
+  user_group:
+    owners:
+      user_field: owner_user_ids
+      group_field: owner_user_group_ids
+      add: UpdateUGroupOwners
+      remove: DeleteUGroupOwners
+      body: UGroupOwners
+      ptr: true
+    associations:
+      - add: UpdateUGroupViewers
+        remove: DeleteUGroupViewers
+        body: UGroupViewers
+        ptr: true
+        fields:
+          - viewer_user_ids
+          - viewer_user_group_ids
+    slice_members:
+      - field: user_ids
+        add: UpdateUGroupUsers
+        remove: RemoveUGroupUsers
+  ou:
+    owners:
+      user_field: owner_user_ids
+      group_field: owner_user_group_ids
+      add: PostOUAddOwners
+      remove: DeleteOURemoveOwners
+      body: OUOwners
+      ptr: true
+  project_cloud_access_role:
+    associations:
+      - add: PostProjectCloudAccessRoleAssociations
+        remove: DeleteProjectCloudAccessRoleAssociations
+        body: ProjectCloudAccessRoleAssociations
+        ptr: true
+        fields:
+          - account_ids
+          - user_group_ids
+          - user_ids
+  ou_cloud_access_role:
+    associations:
+      - add: PostOUCloudAccessRoleAssociations
+        remove: DeleteOUCloudAccessRoleAssociations
+        body: OUCloudAccessRoleAssociations
+        ptr: true
+        fields:
+          - user_group_ids
+          - user_ids
+  compliance_standard:
+    owners:
+      user_field: owner_user_ids
+      group_field: owner_user_group_ids
+      add: PostComplianceStandardOwners
+      remove: DeleteComplianceStandardOwners
+      body: ComplianceStandardOwners
+      ptr: true
+    associations:
+      - add: PostComplianceStandardAssociations
+        remove: DeleteComplianceStandardAssociations
+        body: ComplianceStandardAssociations
+        ptr: true
+        fields:
+          - compliance_check_ids
+  cloud_rule:
+    owners:
+      user_field: owner_user_ids
+      group_field: owner_user_group_ids
+      add: PostCloudRuleOwners
+      remove: DeleteCloudRuleOwners
+      body: CloudRuleOwners
+      ptr: true
+    associations:
+      - add: PostCloudRuleAssociations
+        remove: DeleteCloudRuleAssociations
+        body: CloudRuleAssociations
+        ptr: true
+        fields:
+          - automation_policy_ids
+          - azure_arm_template_definition_ids
+          - azure_policy_definition_ids
+          - azure_role_definition_ids
+          - cft_ids
+          - compliance_standard_ids
+          - gcp_iam_role_ids
+          - iam_policy_ids
+          - internal_ami_ids
+          - internal_portfolio_ids
+          - ou_ids
+          - project_ids
+          - service_control_policy_ids
