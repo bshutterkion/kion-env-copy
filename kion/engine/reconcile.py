@@ -229,8 +229,18 @@ class EngineReconciler:
         t_ids = self._t_ids.setdefault(res, set())
         id_map = self.id_map.setdefault(res, {})
 
+        # Hierarchical/self-referential resources (OU) need their records ordered
+        # parent-first, and may seed ctx/id_map (e.g. the source-root -> target-root
+        # mapping) before any record is processed. Both hooks are optional; the
+        # generic path is unchanged when they're absent.
+        records = self.inventory.get(res, [])
+        if hooks and hooks.order_records is not None:
+            records = hooks.order_records(records, self)
+        if hooks and hooks.pre_reconcile is not None:
+            hooks.pre_reconcile(records, self)
+
         print(f"\n{res}:")
-        for rec in self.inventory.get(res, []):
+        for rec in records:
             src = rec["source_id"]
             nk = tuple(rec["natural_key"])
             fields = rec["fields"]
@@ -242,9 +252,15 @@ class EngineReconciler:
                 self.counts[res]["ok"] += 1
                 continue
 
-            # ADOPT: same natural key already exists on the target.
-            if nk in t_key:
-                found = t_key[nk]
+            # ADOPT: same natural key already exists on the target. A resource may
+            # override the per-record adoption key (OU keys on the *target* parent
+            # id, bridged via id_map, not on its name-chain inventory key); a None
+            # override means "not adoptable yet" -> fall through to create/skip.
+            adopt_nk = nk
+            if hooks and hooks.adopt_key is not None:
+                adopt_nk = hooks.adopt_key(fields, self)
+            if adopt_nk is not None and adopt_nk in t_key:
+                found = t_key[adopt_nk]
                 id_map[str(src)] = found
                 self.counts[res]["adopt"] += 1
                 print(f"  = adopt {label} (existing id {found})")
@@ -279,9 +295,21 @@ class EngineReconciler:
             new_id = self._post(res, paths, payload, src, action, label)
             if new_id is not None:
                 id_map[str(src)] = new_id
-                # Newly created/adopted record becomes resolvable to anything
-                # depending on this resource that reconciles afterward.
-                t_key[nk] = new_id
+                # post_create runs first so any ctx anchoring it does (e.g. a
+                # rootless target adopting the just-created OU as target_root_id)
+                # is visible when we compute this record's index key below.
+                if hooks and hooks.post_create is not None:
+                    hooks.post_create(fields, new_id, self)
+                # Newly created record becomes resolvable to anything depending on
+                # this resource that reconciles afterward. Index it under the same
+                # key adoption would look it up by (id-based for OU, else the
+                # name-chain inventory key).
+                index_key = nk
+                if hooks and hooks.adopt_key is not None:
+                    k = hooks.adopt_key(fields, self)
+                    if k is not None:
+                        index_key = k
+                t_key[index_key] = new_id
                 t_ids.add(new_id)
 
     def run(self) -> dict:

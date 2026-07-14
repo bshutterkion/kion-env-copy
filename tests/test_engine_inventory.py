@@ -22,6 +22,28 @@ def test_inventory_translates_refs_to_keys():
     assert proj["fields"]["ou_id"] == ("root",)   # id 9 -> ou natural key
 
 
+def test_inventory_orders_self_ref_ous_parent_first():
+    """A self-referential hierarchy (OU) whose LIST endpoint returns a child
+    before its parent must still get a parent-resolved name_in_parent key: the
+    parent's key has to be computed first, so build_inventory processes OU records
+    parent-first regardless of API order."""
+    from kion.meta.load import ResourceMeta
+    m = {"ou": ResourceMeta("ou", read_path="/v3/ou", read_method="GET")}
+    # child listed BEFORE its parent — the ordering hazard.
+    client = StubClient({"/v3/ou": [
+        {"id": 2, "name": "Team", "parent_ou_id": 1},
+        {"id": 1, "name": "Root", "parent_ou_id": None},
+    ]})
+    refs = {"ou": []}
+    nk = {"ou": {"kind": "name_in_parent", "parent_field": "parent_ou_id"}}
+    inv = build_inventory(client, m, refs, nk, ["ou"])
+    by_src = {r["source_id"]: r for r in inv["ou"]}
+    assert by_src[1]["natural_key"] == ("root",)
+    # parent-resolved chain, NOT the raw (1, 'team') you'd get if the child were
+    # keyed before its parent was seen.
+    assert by_src[2]["natural_key"] == ("root", "team")
+
+
 def test_inventory_reads_accounts_union_with_namespacing():
     """account records come from the UNION of /v3/account (associated) and
     /v3/account-cache (cached); cached ids are namespaced 'cache:<id>', natural

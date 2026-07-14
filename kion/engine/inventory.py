@@ -21,6 +21,7 @@ from kion.engine.paths import list_path
 from kion.engine.read import list_records
 from kion.engine.refmap import to_natural
 from kion.export import _account_record
+from kion.import_ import order_ous
 
 
 def _on_read_error(path, exc) -> None:
@@ -38,6 +39,21 @@ def _parent_target(res: str, parent_field: str, refs: dict) -> str:
         if r.field == parent_field:
             return r.target
     return res
+
+
+def _order_self_ref(res: str, records: list, nkeys: dict, refs: dict) -> list:
+    """Parent-before-child ordering for a *self-referential* name_in_parent
+    resource, so each record's parent key is already in ``id_to_key`` when the
+    child's key is computed. OU is the only such entity; its parent field is
+    ``parent_ou_id``, which ``order_ous`` keys on. Non-self-referential
+    hierarchies (project/scope, whose parent is another resource) are untouched —
+    their parent is fully read before them by ``order_resources``."""
+    spec = nkeys.get(res) or {}
+    if (spec.get("kind") == "name_in_parent"
+            and spec.get("parent_field") == "parent_ou_id"
+            and _parent_target(res, "parent_ou_id", refs) == res):
+        return order_ous(records)
+    return records
 
 
 def _record_key(res: str, record: dict, nkeys: dict, refs: dict, id_to_key: dict) -> tuple:
@@ -116,6 +132,9 @@ def build_inventory(client, meta: dict, refs: dict, nkeys: dict,
         rm = meta[res]
         path = list_path(getattr(rm, "read_path", None))
         records = list_records(client, path, on_error=_on_read_error) if path else []
+        # A self-referential hierarchy (OU) must be walked parent-first so the
+        # name_in_parent key resolves the parent's already-computed key.
+        records = _order_self_ref(res, records, nkeys, refs)
         ignores = set(getattr(rm, "ignores", None) or [])
 
         out = []

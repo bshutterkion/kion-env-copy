@@ -227,6 +227,163 @@ def test_index_target_warns_on_target_list_failure():
     assert any("target thing list failed: 503" in w for w in r.warnings)
 
 
+# -- OU hierarchy / root support (10c) ------------------------------------
+
+def _ou_meta():
+    m = M(); m.create_path = "/v3/ou"; m.create_method = "POST"
+    m.read_path = "/v3/ou/{id}"; m.ignores = []; m.archetype = "entity"; m.name = "ou"
+    return {"ou": m}
+
+_OU_NK = {"ou": {"kind": "name_in_parent", "parent_field": "parent_ou_id"}}
+
+
+def _ou_rec(source_id, parent_ou_id, name, key):
+    return {"source_id": source_id, "natural_key": key,
+            "fields": {"name": name, "parent_ou_id": parent_ou_id,
+                       "permission_scheme_name": None}}
+
+
+class _RecordingClient:
+    """Captures POSTs and hands back synthetic ids so apply-mode tests can
+    inspect the create payloads the engine built."""
+    def __init__(self):
+        self.posts = []
+        self._n = 1000
+
+    def post(self, path, json=None):
+        self.posts.append((path, json))
+        self._n += 1
+        return {"record_id": self._n}
+
+
+def _ou_reconciler(inv, apply=False, id_map=None):
+    return EngineReconciler(
+        client=None, config=None, inventory=inv, meta=_ou_meta(),
+        refs={"ou": []}, nkeys=_OU_NK, apply=apply, id_map=id_map)
+
+
+def test_ou_root_maps_to_target_root_no_create_regardless_of_name():
+    """The source root maps onto the target root (by position, not name) with no
+    create and no adopt, and the mapping is recorded in id_map."""
+    inv = {"ou": [_ou_rec(1, None, "SourceRootDifferentName", ("sourcerootdifferentname",))]}
+    r = _ou_reconciler(inv)
+    r._t_key = {"ou": {(None, "tgtroot"): 500}}   # target root named differently
+    r._t_ids = {"ou": {500}}
+    r.target_root_id = 500
+    r.run()
+    assert r.id_map["ou"]["1"] == 500
+    assert r.counts["ou"]["create"] == 0
+    assert r.counts["ou"]["adopt"] == 0
+
+
+def test_ou_child_payload_parent_is_id_map_target_of_source_parent():
+    """A child's create payload carries parent_ou_id = the target id its source
+    parent mapped to (pulled parent-first, bridged through id_map)."""
+    inv = {"ou": [
+        _ou_rec(1, None, "SrcRoot", ("srcroot",)),
+        _ou_rec(2, 1, "Team", ("srcroot", "team")),
+    ]}
+    r = _ou_reconciler(inv, apply=True)
+    client = _RecordingClient()
+    r.client = client
+    r._t_key = {"ou": {}}
+    r._t_ids = {"ou": {500}}
+    r.target_root_id = 500
+    r.schemes = {"Default OU Permissions Scheme": 10}   # type-default resolves
+    r.current_user_id = 42
+    r.run()
+    assert len(client.posts) == 1                        # root not created
+    path, payload = client.posts[0]
+    assert path == "/v3/ou"
+    assert payload["name"] == "Team"
+    assert payload["parent_ou_id"] == 500               # id_map["ou"]["1"]
+    assert payload["permission_scheme_id"] == 10
+    assert payload["owner_user_ids"] == [42]            # current-user fallback
+    assert r.id_map["ou"]["2"] == 1001
+
+
+def test_ou_reconciles_parents_before_children_when_inventory_out_of_order():
+    """Given OUs child-first in the inventory, the engine still reconciles the
+    parent first, so no child is skipped as 'parent unresolved'."""
+    inv = {"ou": [
+        _ou_rec(3, 2, "Squad", ("srcroot", "team", "squad")),
+        _ou_rec(2, 1, "Team", ("srcroot", "team")),
+        _ou_rec(1, None, "SrcRoot", ("srcroot",)),
+    ]}
+    r = _ou_reconciler(inv, apply=True)
+    client = _RecordingClient()
+    r.client = client
+    r._t_key = {"ou": {}}
+    r._t_ids = {"ou": {500}}
+    r.target_root_id = 500
+    r.schemes = {"Default OU Permissions Scheme": 10}
+    r.current_user_id = 42
+    r.run()
+    assert r.skipped["ou"] == 0
+    assert r.id_map["ou"]["2"] and r.id_map["ou"]["3"]
+    # Squad's parent must resolve to Team's freshly-created id (not skipped).
+    payloads = {p["name"]: p for _, p in client.posts}
+    assert payloads["Team"]["parent_ou_id"] == 500
+    assert payloads["Squad"]["parent_ou_id"] == r.id_map["ou"]["2"]
+    assert not any("unresolved" in w for w in r.warnings)
+
+
+def test_ou_child_skipped_when_scheme_unresolved():
+    inv = {"ou": [
+        _ou_rec(1, None, "SrcRoot", ("srcroot",)),
+        _ou_rec(2, 1, "Team", ("srcroot", "team")),
+    ]}
+    r = _ou_reconciler(inv, apply=True)
+    r.client = _RecordingClient()
+    r._t_key = {"ou": {}}
+    r._t_ids = {"ou": {500}}
+    r.target_root_id = 500
+    r.schemes = {}                # nothing resolves, config is None -> unresolved
+    r.run()
+    assert r.skipped["ou"] == 1
+    assert r.counts["ou"]["create"] == 0
+
+
+def test_ou_rootless_target_creates_root_top_level_and_anchors():
+    """With no target root, the source root is minted top-level (parent_ou_id=0)
+    and becomes target_root_id for the rest of the run."""
+    inv = {"ou": [
+        _ou_rec(1, None, "SrcRoot", ("srcroot",)),
+        _ou_rec(2, 1, "Team", ("srcroot", "team")),
+    ]}
+    r = _ou_reconciler(inv, apply=True)
+    client = _RecordingClient()
+    r.client = client
+    r._t_key = {"ou": {}}
+    r._t_ids = {"ou": set()}
+    r.target_root_id = None
+    r.schemes = {"Default OU Permissions Scheme": 10}
+    r.current_user_id = 42
+    r.run()
+    payloads = {p["name"]: p for _, p in client.posts}
+    assert payloads["SrcRoot"]["parent_ou_id"] == 0
+    assert r.target_root_id == r.id_map["ou"]["1"]      # anchored to created root
+    assert payloads["Team"]["parent_ou_id"] == r.id_map["ou"]["1"]
+
+
+def test_ou_adopts_existing_child_by_target_parent_and_name():
+    """A child that already exists on the target (same target-parent + name) is
+    adopted, not duplicated — even though its inventory natural key is a name
+    chain, adoption keys on (target parent id, name)."""
+    inv = {"ou": [
+        _ou_rec(1, None, "SrcRoot", ("srcroot",)),
+        _ou_rec(2, 1, "Team", ("srcroot", "team")),
+    ]}
+    r = _ou_reconciler(inv)
+    r._t_key = {"ou": {(500, "team"): 600}}   # existing child under target root 500
+    r._t_ids = {"ou": {500, 600}}
+    r.target_root_id = 500
+    r.run()
+    assert r.id_map["ou"]["2"] == 600
+    assert r.counts["ou"]["adopt"] == 1
+    assert r.counts["ou"]["create"] == 0
+
+
 def test_plan_recreates_when_mapped_id_missing_from_target():
     inv = {"thing": [{"source_id": 1, "natural_key": ("a",), "fields": {"name": "A"}}]}
     r = EngineReconciler(client=None, config=None, inventory=inv,
