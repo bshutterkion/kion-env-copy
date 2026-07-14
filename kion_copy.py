@@ -17,30 +17,9 @@ from kion.client import KionAPIError, KionClient
 from kion.config import Config
 from kion.engine.inventory import build_inventory
 from kion.engine.reconcile import EngineReconciler
+from kion.engine.setup import engine_meta
 from kion.export import export_install
 from kion.import_ import Importer
-from kion.meta.load import load_natural_keys, load_references, load_resource_meta
-
-
-def _engine_meta():
-    """Load the metadata that drives the generic engine: per-resource
-    read/create paths + ignores (ResourceMeta), cross-resource id references,
-    and natural-key specs, plus the resource set --engine can actually walk.
-
-    ``generator_config.yaml`` (ResourceMeta) currently covers ~60 vendor
-    entities, but ``natural_keys.yaml`` only has entries for the handful
-    onboarded to the engine so far (see CLAUDE.md task sequencing). A resource
-    without a natural-key spec would KeyError inside ``natural_key()``, so the
-    usable resource set is the intersection, not all of ``meta``. ``account``
-    has no ``generator_config.yaml`` entry under that exact name (a vendor gap)
-    but is supplied a list read_path via ``load.READ_OVERRIDES``, so it now joins
-    the set and is read as the union of /v3/account + /v3/account-cache.
-    """
-    meta = load_resource_meta()
-    refs = load_references()
-    nkeys = load_natural_keys()
-    resources = sorted(r for r in meta if r in nkeys)
-    return meta, refs, nkeys, resources
 
 
 def _client(cfg: Config) -> KionClient:
@@ -53,7 +32,7 @@ def cmd_export(args) -> int:
     print(f"Exporting from {cfg.url} ...")
     try:
         if args.engine:
-            meta, refs, nkeys, resources = _engine_meta()
+            meta, refs, nkeys, resources = engine_meta()
             snapshot = build_inventory(client, meta, refs, nkeys, resources)
         else:
             snapshot = export_install(client)
@@ -80,7 +59,7 @@ def cmd_import(args) -> int:
         print(f"Loaded state from {args.id_map}")
 
     if args.engine:
-        meta, refs, nkeys, _resources = _engine_meta()
+        meta, refs, nkeys, _resources = engine_meta()
         reconciler = EngineReconciler(client, cfg, snapshot, meta, refs, nkeys,
                                        apply=args.apply, id_map=id_map)
         try:

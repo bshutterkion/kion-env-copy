@@ -12,13 +12,17 @@ GET a resource's list endpoint and unwrap the result. Two response shapes exist
     ``export._export_scopes`` / ``import_._list_scopes``).
 
 Factored here so the two call sites can't drift on either the unwrap or the
-paging. The first request is deliberately param-free: the bare-list call sites
-pass no params today, and the paginated endpoints still return their first page
-(and ``total``) without one.
+paging. The first request already sends ``{"page": 1, "count": 100}`` — mirroring
+the oracle's paginated readers (``export._export_scopes`` /
+``import_._list_scopes``), which send those params from their first request.
+Bare-list endpoints that don't paginate simply ignore the params and return
+their whole list in one response.
 """
 from __future__ import annotations
 
 from kion.client import KionAPIError
+
+_PAGE_SIZE = 100
 
 
 def _unwrap(resp):
@@ -39,7 +43,7 @@ def list_records(client, path: str, on_error=None) -> list[dict]:
     caller can surface the failure (warning/log) before degrading to an empty
     result. Without it, the failure is swallowed exactly as before."""
     try:
-        resp = client.get(path)
+        resp = client.get(path, params={"page": 1, "count": _PAGE_SIZE})
     except KionAPIError as e:
         if on_error is not None:
             on_error(path, e)
@@ -50,12 +54,11 @@ def list_records(client, path: str, on_error=None) -> list[dict]:
 
     items = list(_unwrap(resp))
     total = resp.get("total", len(items))
-    count = len(items) or 100  # keep page size consistent with page 1
     page = 1
     while items and len(items) < total:
         page += 1
         try:
-            resp = client.get(path, params={"page": page, "count": count})
+            resp = client.get(path, params={"page": page, "count": _PAGE_SIZE})
         except KionAPIError as e:
             if on_error is not None:
                 on_error(path, e)

@@ -35,9 +35,9 @@ from kion.client import KionAPIError, KionClient
 from kion.config import Config
 from kion.engine.inventory import build_inventory
 from kion.engine.reconcile import EngineReconciler
+from kion.engine.setup import engine_meta
 from kion.export import export_install
 from kion.import_ import Importer
-from kion.meta.load import load_natural_keys, load_references, load_resource_meta
 
 # (oracle plural kind, engine singular resource)
 PAIRS = [
@@ -58,16 +58,6 @@ def _client(cfg: Config) -> KionClient:
                       api_prefix=cfg.api_prefix)
 
 
-def _engine_meta():
-    """The metadata + the resource set the engine can actually walk (the
-    intersection of ResourceMeta and natural-key specs — see kion_copy._engine_meta)."""
-    meta = load_resource_meta()
-    refs = load_references()
-    nkeys = load_natural_keys()
-    resources = sorted(r for r in meta if r in nkeys)
-    return meta, refs, nkeys, resources
-
-
 def _oracle_counts(row: dict, action: str) -> int:
     return row["counts"][action]
 
@@ -85,7 +75,7 @@ def gather(source_env: str, target_env: str, quiet: bool = True):
     tgt_cfg = Config.load(target_env)
     tgt_client = _client(tgt_cfg)
 
-    meta, refs, nkeys, resources = _engine_meta()
+    meta, refs, nkeys, resources = engine_meta()
 
     sink = io.StringIO() if quiet else sys.stdout
     with contextlib.redirect_stdout(sink):

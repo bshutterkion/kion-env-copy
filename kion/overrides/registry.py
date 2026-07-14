@@ -29,6 +29,15 @@ class Hooks:
     # whose adoption reads are per-scope -- it doesn't fit the generic
     # list+natural-key model. Default None -> generic path, all else unchanged.
     reconcile_override: Callable | None = None  # (ctx, records) -> None
+    # -- when True, EngineReconciler._index_target skips building the generic
+    # _t_key/_t_ids index for this resource. Set only for a reconcile_override
+    # resource whose override never consumes that index (budget reads target
+    # budgets per-scope via _target_budgets_for), so the global-list GET the
+    # index would issue is useless -- and on installs where the list endpoint
+    # isn't valid it emits a misleading 'target ... list failed' warning every
+    # run. NOTE: scope also has a reconcile_override but DOES consume
+    # _t_key['scope'], so it must stay indexed -- do NOT set this for scope.
+    skip_target_index: bool = False
 
 def _account_payload(rec, ctx):
     payer_new = ctx.id_map["billing_source"].get(str(rec.get("__srcid__payer_id")))
@@ -474,6 +483,6 @@ HOOKS = {
         post_create=_ou_post_create,
     ),
     "billing_source": Hooks(build_create_payload=_billing_source_payload),
-    "budget": Hooks(reconcile_override=_budget_reconcile),
+    "budget": Hooks(reconcile_override=_budget_reconcile, skip_target_index=True),
     "scope": Hooks(reconcile_override=_scope_reconcile),
 }
