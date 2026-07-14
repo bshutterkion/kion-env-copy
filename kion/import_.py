@@ -155,9 +155,90 @@ ACCOUNT_NUMBER_FIELD = {
 }
 
 
+def account_project_payload(a: dict, proj_new, payer_new):
+    """Build (path, payload) to create a cloud account *associated with a project*
+    via ``/v3/account?account-type={provider}``. Requires project_id + payer_id +
+    start_datecode (verified against the *AccountCreate swagger schemas)."""
+    provider = a.get("provider") or "custom"
+    num_field = ACCOUNT_NUMBER_FIELD.get(provider, "account_number")
+    payload = {
+        num_field: a.get("account_number"),
+        "account_name": a.get("account_name"),
+        "project_id": proj_new,
+        "payer_id": payer_new,
+        "start_datecode": a.get("start_datecode"),
+    }
+    if a.get("account_alias"):
+        payload["account_alias"] = a["account_alias"]
+    if provider != "custom":  # the custom create endpoint rejects account_type_id
+        payload["account_type_id"] = a.get("account_type_id")
+    if provider in ("aws", "azure", "google-cloud"):
+        payload["skip_access_checking"] = True
+    if provider == "aws" and a.get("linked_account_number"):
+        # required for linked AWS accounts (e.g. GovCloud paired to a commercial account)
+        payload["linked_aws_account_number"] = a["linked_account_number"]
+        if a.get("include_linked_account_spend") is not None:
+            payload["include_linked_account_spend"] = a["include_linked_account_spend"]
+    return f"/v3/account?account-type={provider}", payload
+
+
+def account_cache_payload(a: dict, payer_new):
+    """Build (path, payload) to create a cloud account in the target's *account
+    cache* (unassociated with any project) via ``/v3/account-cache?account-type=…``.
+
+    The cache create family needs only a payer (billing source) — no project_id or
+    start_datecode. Field rules verified against the *AccountCacheCreate swagger
+    schemas: ``account_type_id`` is required for aws and accepted for azure/gcp/oci
+    but ABSENT for custom; ``skip_access_checking`` exists for all but custom; the
+    aws linked field is ``linked_account_number`` (not ``linked_aws_account_number``).
+    """
+    provider = a.get("provider") or "custom"
+    num_field = ACCOUNT_NUMBER_FIELD.get(provider, "account_number")
+    payload = {
+        num_field: a.get("account_number"),
+        "account_name": a.get("account_name"),
+        "payer_id": payer_new,
+    }
+    if a.get("account_alias"):
+        payload["account_alias"] = a["account_alias"]
+    if provider != "custom":  # custom cache create has no account_type_id/skip_access_checking
+        payload["account_type_id"] = a.get("account_type_id")
+        payload["skip_access_checking"] = True
+    if provider == "aws" and a.get("linked_account_number"):
+        payload["linked_account_number"] = a["linked_account_number"]
+        if a.get("include_linked_account_spend") is not None:
+            payload["include_linked_account_spend"] = a["include_linked_account_spend"]
+    return f"/v3/account-cache?account-type={provider}", payload
+
+
+def parse_only(only, kinds=KINDS):
+    """Normalize/validate a ``--only`` selection into a set of kinds, or None (all).
+
+    Raises ValueError on an unknown kind or a selection whose hard dependency is
+    unmet (accounts need a payer billing source, so 'accounts' requires
+    'billing_sources')."""
+    if not only:
+        return None
+    if isinstance(only, str):
+        only = only.split(",")
+    sel = {k.strip() for k in only if k and k.strip()}
+    if not sel:
+        return None
+    unknown = sel - set(kinds)
+    if unknown:
+        raise ValueError(
+            f"unknown kind(s): {', '.join(sorted(unknown))}. "
+            f"valid kinds: {', '.join(kinds)}")
+    if "accounts" in sel and "billing_sources" not in sel:
+        raise ValueError(
+            "'accounts' requires 'billing_sources' in --only "
+            "(accounts need a payer billing source to exist on the target)")
+    return sel
+
+
 class Importer:
     def __init__(self, client: KionClient, config, snapshot: dict, apply: bool,
-                 id_map: dict | None = None):
+                 id_map: dict | None = None, only=None):
         self.client = client
         self.config = config
         self.snapshot = snapshot
@@ -165,6 +246,8 @@ class Importer:
         self.id_map = id_map or {}
         for k in KINDS:
             self.id_map.setdefault(k, {})
+        # None = reconcile all kinds; otherwise a validated subset (see parse_only).
+        self.only = parse_only(only)
 
         # target lookups (populated in run)
         self.schemes: dict = {}
@@ -308,6 +391,15 @@ class Importer:
         self._t_acct_ids = {a["id"] for a in accts}
         self._t_acct_by_number = {a.get("account_number"): a["id"]
                                   for a in accts if a.get("account_number")}
+        # Union in the account cache (unassociated accounts). An account is either
+        # associated or cached, never both, so keying both by account_number lets a
+        # re-apply adopt an already-copied account wherever it currently sits instead
+        # of duplicating it. (Cache ids live in a separate space; used only for the
+        # weak liveness check in _reconcile_accounts.)
+        for a in self._list_account_cache():
+            self._t_acct_ids.add(a["id"])
+            if a.get("account_number"):
+                self._t_acct_by_number.setdefault(a.get("account_number"), a["id"])
 
         for s in self._list_scopes():
             self._t_scope_ids.add(s["id"])
@@ -352,6 +444,16 @@ class Importer:
             return []
         return (resp.get("items") if isinstance(resp, dict) else resp) or []
 
+    def _list_account_cache(self) -> list:
+        """Unassociated accounts on the target (/v3/account-cache). Handles a bare
+        list or an {items,total} envelope (the swagger response body is unspecified)."""
+        try:
+            resp = self.client.get("/v3/account-cache")
+        except KionAPIError as e:
+            self.warnings.append(f"target account-cache list failed: {e.status}")
+            return []
+        return (resp.get("items") if isinstance(resp, dict) else resp) or []
+
     def _target_budgets_for(self, kind: str, tgt_scope_id) -> dict:
         """natural_key -> budget_id for budgets on a target OU/project (cached)."""
         cache_key = f"{kind}:{tgt_scope_id}"
@@ -372,20 +474,30 @@ class Importer:
         return index
 
     # -- run --------------------------------------------------------------
+    def _enabled(self, kind: str) -> bool:
+        return self.only is None or kind in self.only
+
     def run(self) -> dict:
         mode = "APPLY" if self.apply else "PLAN (no changes written)"
         print(f"\n=== Reconcile [{mode}] -> {self.config.url} ===")
+        if self.only is not None:
+            print(f"  (--only: {', '.join(k for k in KINDS if k in self.only)})")
         self._index_target()
         if self.target_root_id is None:
             self.warnings.append("could not find target root OU; OUs may fail")
 
-        self._reconcile_billing_sources()
-        self._reconcile_ous()
-        self._reconcile_funding_sources()
-        self._reconcile_projects()
-        self._reconcile_budgets()
-        self._reconcile_accounts()
-        self._reconcile_scopes()
+        passes = {
+            "billing_sources": self._reconcile_billing_sources,
+            "ous": self._reconcile_ous,
+            "funding_sources": self._reconcile_funding_sources,
+            "projects": self._reconcile_projects,
+            "budgets": self._reconcile_budgets,
+            "accounts": self._reconcile_accounts,
+            "scopes": self._reconcile_scopes,
+        }
+        for kind in KINDS:
+            if self._enabled(kind):
+                passes[kind]()
         self._summary()
         return self.id_map
 
@@ -814,11 +926,17 @@ class Importer:
                 print(f"  = adopt {label} (existing id {found})")
                 continue
 
-            proj_new = self.id_map["projects"].get(str(a.get("project_id")))
-            if proj_new is None:
-                self.warnings.append(f"{label}: project {a.get('project_id')} unresolved, skipped")
+            # Every create family requires the provider identifier (account_number /
+            # subscription_uuid / …). A blank one can never be created (nor adopted),
+            # so treat it as an expected skip rather than letting the API 400 it.
+            if not num:
+                self.warnings.append(f"{label}: no account_number, cannot create, skipped")
                 self.skipped["accounts"] += 1
                 continue
+
+            # Payer (billing source) is required by BOTH create families; without it
+            # the account can't be recreated at all (its billing source type wasn't
+            # recreatable — azure/gcp/anthropic).
             payer_new = self.id_map["billing_sources"].get(str(a.get("payer_id")))
             if payer_new is None:
                 self.warnings.append(
@@ -827,30 +945,21 @@ class Importer:
                 self.skipped["accounts"] += 1
                 continue
 
-            provider = a.get("provider") or "custom"
-            num_field = ACCOUNT_NUMBER_FIELD.get(provider, "account_number")
+            # Resolve the project. If it resolves, associate the account to it; if it
+            # doesn't (projects weren't synced, the source account was already
+            # cache-only, or the project failed) put the account in the target's
+            # account cache (unassociated) rather than dropping it.
+            proj_src = a.get("project_id")
+            proj_new = (self.id_map["projects"].get(str(proj_src))
+                        if proj_src not in (None, 0) else None)
             action = "recreate" if mapped is not None else "create"
-            payload = {
-                num_field: num,
-                "account_name": a.get("account_name"),
-                "project_id": proj_new,
-                "payer_id": payer_new,
-                "start_datecode": a.get("start_datecode"),
-            }
-            if a.get("account_alias"):
-                payload["account_alias"] = a["account_alias"]
-            if provider != "custom":  # the custom create endpoint rejects account_type_id
-                payload["account_type_id"] = a.get("account_type_id")
-            if provider in ("aws", "azure", "google-cloud"):
-                payload["skip_access_checking"] = True
-            if provider == "aws" and a.get("linked_account_number"):
-                # required for linked AWS accounts (e.g. GovCloud paired to a commercial account)
-                payload["linked_aws_account_number"] = a["linked_account_number"]
-                if a.get("include_linked_account_spend") is not None:
-                    payload["include_linked_account_spend"] = a["include_linked_account_spend"]
+            if proj_new is not None:
+                path, payload = account_project_payload(a, proj_new, payer_new)
+            else:
+                path, payload = account_cache_payload(a, payer_new)
+                label += " (→ cache)"
 
-            new_id = self._post("accounts", f"/v3/account?account-type={provider}",
-                                payload, src, action, label)
+            new_id = self._post("accounts", path, payload, src, action, label)
             if new_id is not None:
                 self.id_map["accounts"][str(src)] = new_id
                 if num:  # let scopes (which run next) resolve this account by number

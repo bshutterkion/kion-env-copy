@@ -56,6 +56,22 @@ python -m pytest tests/                                     # unit tests
 
 API key: Kion → User Profile → App API Keys → create.
 
+**Syncing a subset** — `import --only KIND[,KIND...]` restricts which entity kinds
+are reconciled (default: all of
+`billing_sources,ous,funding_sources,projects,budgets,accounts,scopes`). Example —
+copy just billing sources and cloud accounts (accounts land in the target's account
+cache, unassociated; see the accounts note below):
+
+```sh
+python kion_copy.py import --env-file .env.target --only billing_sources,accounts          # plan
+python kion_copy.py import --env-file .env.target --only billing_sources,accounts --apply  # write
+```
+
+`--only accounts` without `billing_sources` is rejected (accounts need a payer
+billing source on the target). Kinds whose passes don't run leave their id-map
+mappings empty, so anything depending on them routes accordingly (e.g. accounts with
+no resolvable project → the cache).
+
 ## Kion API behavior you must know (verified live — swagger is incomplete/misleading)
 
 - **Response envelope**: list/detail responses are `{status, data}`; create
@@ -87,6 +103,26 @@ API key: Kion → User Profile → App API Keys → create.
   - "budget timeframe not fully covered" → a month in `[start, end)` has no row.
   - "insufficient funds available on funding source" → a funding source is
     over-subscribed (its total allocation across budgets exceeds its amount).
+- **Account cache** (unassociated accounts): Kion has **two** account-create
+  families, verified against the SDK swagger. `POST /v3/account?account-type=…`
+  creates an account **attached to a project** (requires `project_id`, `payer_id`,
+  `start_datecode`). `POST /v3/account-cache?account-type=…` creates it in the
+  **account cache** (unassociated) — requires only a **payer** (billing source), no
+  `project_id`/`start_datecode`. Import's rule (`_reconcile_accounts`): payer must
+  resolve or the account is **skipped**; then if the project resolves it associates
+  (`account_project_payload`), otherwise it goes to the cache
+  (`account_cache_payload`, reported `→ cache`). This is what makes `--only
+  billing_sources,accounts` self-contained (no OU/project needed), and it also means
+  a source account that was already cache-only is copied instead of dropped. Cache
+  schema quirks: `account_type_id` is **required for aws**, accepted for
+  azure/gcp/oci, **absent for custom**; `skip_access_checking` exists for all but
+  custom; the aws linked field is `linked_account_number` (the project form uses
+  `linked_aws_account_number`). Export reads **both** `/v3/account` and
+  `/v3/account-cache` on the source; cache records carry `project_id=None` and a
+  namespaced `source_id` (`cache:<id>`) since cache ids live in a separate id space.
+  Idempotency: `_index_target` unions `/v3/account` + `/v3/account-cache` by
+  `account_number`, so re-`--apply` adopts an already-copied account wherever it
+  currently sits.
 - **Cloud accounts** (`/v3/account`): unlike billing sources, the read **does**
   expose `project_id` and `payer_id`, so accounts re-attach to the copied project +
   billing source. Created as shells (`skip_access_checking` for aws/azure/gcp;
@@ -110,8 +146,20 @@ API key: Kion → User Profile → App API Keys → create.
   **before** scopes for this reason.
 - **Billing sources** (`/v4/billing-source`, paginated): the read exposes config
   but **never secrets** (`key_secret`, AWS `linked_role`, OCI `private_key`,
-  Azure/GCP creds are redacted). Import recreates **custom/aws/oci** as
-  non-functional shells (`skip_validation` + placeholders the customer replaces);
+  Azure/GCP creds are redacted). Import recreates **custom/aws/oci** with
+  `skip_validation` (a **create-time-only** flag that bypasses the connection test;
+  it is **not** a persisted attribute, so the edit UI shows the "Skip Billing Source
+  Validation" checkbox unchecked afterward — that does not mean the source is a
+  shell). What actually differs by type:
+  - **custom** (e.g. FOCUS sources): the full `aws_connection` (report bucket /
+    prefix / region) is copied verbatim — there is **no secret** to redact (S3 is
+    role-assumed), so these come over **functional**, ingesting spend as soon as the
+    target can reach that bucket/role. Not shells.
+  - **aws / oci**: connection config copies, but the real secrets the read redacts
+    (`linked_role` for aws; `fingerprint`/`private_key` for oci) go in as
+    `REPLACE-ON-TARGET` placeholders — these ARE non-functional until the customer
+    edits in the real values.
+
   **gcp/azure/anthropic** are exported but skipped (need a prerequisite service
   account or provider registration flow). Adopted by name.
 

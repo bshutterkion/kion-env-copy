@@ -16,7 +16,7 @@ import sys
 
 from .client import KionAPIError, KionClient
 
-SCHEMA_VERSION = 4  # v2 scopes; v3 billing sources; v4 accounts
+SCHEMA_VERSION = 5  # v2 scopes; v3 billing sources; v4 accounts; v5 + cached accounts
 
 
 def _warn(msg: str) -> None:
@@ -76,37 +76,60 @@ ACCOUNT_PROVIDER = {
 }
 
 
+def _account_record(a: dict, cached: bool) -> dict:
+    """Normalize an account (from /v3/account or /v3/account-cache) into a portable
+    record. Cache accounts have no project — ``cached`` records carry no project_id
+    and are namespaced ('cache:<id>') so their ids never collide with associated
+    accounts (the two live in separate id spaces) in the import id-map."""
+    aid = a.get("id")
+    return {
+        "source_id": f"cache:{aid}" if cached else aid,
+        "cached": cached,
+        "account_number": a.get("account_number"),
+        "account_name": a.get("account_name"),
+        "account_alias": a.get("account_alias"),
+        "account_type_id": a.get("account_type_id"),
+        "provider": ACCOUNT_PROVIDER.get(a.get("account_type_id"), "custom"),
+        "project_id": None if cached else a.get("project_id"),
+        "payer_id": a.get("payer_id"),
+        "start_datecode": a.get("start_datecode"),
+        "linked_account_number": a.get("linked_account_number"),
+        "linked_role": a.get("linked_role"),
+        "include_linked_account_spend": a.get("include_linked_account_spend"),
+        "use_org_account_info": a.get("use_org_account_info"),
+    }
+
+
 def _export_accounts(client) -> list[dict]:
-    """Export cloud accounts. The read API exposes project_id and payer_id, so
-    accounts can be re-attached to the copied project + billing source. Real cloud
-    linkage (credentials/access) is not migrated; import recreates shells with
-    access checking off (see import). Accounts whose billing source can't be
-    recreated (azure/gcp/anthropic) are skipped on import via the payer dependency.
+    """Export cloud accounts, both project-associated (/v3/account) and those
+    already sitting in the source's cache (/v3/account-cache).
+
+    The read API exposes project_id and payer_id, so associated accounts re-attach
+    to the copied project + billing source; cache accounts have only a payer. Real
+    cloud linkage (credentials/access) is not migrated — import recreates shells
+    with access checking off. On import, an account whose project can't be resolved
+    (including every cache account) is placed in the target's account cache; accounts
+    whose billing source can't be recreated (azure/gcp/anthropic) are skipped via the
+    payer dependency.
     """
     accts = client.get("/v3/account") or []
-    out = []
-    for a in accts:
-        out.append(
-            {
-                "source_id": a.get("id"),
-                "account_number": a.get("account_number"),
-                "account_name": a.get("account_name"),
-                "account_alias": a.get("account_alias"),
-                "account_type_id": a.get("account_type_id"),
-                "provider": ACCOUNT_PROVIDER.get(a.get("account_type_id"), "custom"),
-                "project_id": a.get("project_id"),
-                "payer_id": a.get("payer_id"),
-                "start_datecode": a.get("start_datecode"),
-                "linked_account_number": a.get("linked_account_number"),
-                "linked_role": a.get("linked_role"),
-                "include_linked_account_spend": a.get("include_linked_account_spend"),
-                "use_org_account_info": a.get("use_org_account_info"),
-            }
-        )
+    out = [_account_record(a, cached=False) for a in accts]
+
+    n_cache = 0
+    try:
+        resp = client.get("/v3/account-cache")
+        cache_items = resp.get("items") if isinstance(resp, dict) else resp
+    except KionAPIError as e:
+        _warn(f"account-cache list failed: {e.status}; cache accounts not exported")
+        cache_items = []
+    for a in cache_items or []:
+        out.append(_account_record(a, cached=True))
+        n_cache += 1
+
     by_provider = {}
     for a in out:
         by_provider[a["provider"]] = by_provider.get(a["provider"], 0) + 1
-    print(f"  accounts: {len(out)} {by_provider}")
+    print(f"  accounts: {len(out)} {by_provider} ({n_cache} already in source cache)")
     return out
 
 
@@ -123,8 +146,10 @@ BILLING_TYPE_KEYS = {
 
 def _export_billing_sources(client) -> list[dict]:
     """Export billing sources (/v4/billing-source). The read API exposes connection
-    config but never secrets (keys/role trust are redacted), so these recreate as
-    non-functional shells — see import for which types can be recreated at all.
+    config but never secrets (keys/role trust are redacted). On import, custom
+    (e.g. FOCUS) sources copy their full aws_connection and come over functional;
+    aws/oci copy config but their redacted secrets go in as placeholders (shells the
+    customer completes) — see import for which types can be recreated at all.
     """
     try:
         resp = client.get("/v4/billing-source")
