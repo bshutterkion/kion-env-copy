@@ -416,3 +416,183 @@ All other 14 active resources -- including all of the original 7 -- read cleanly
 Ran `python scripts/equivalence_check.py --source-env .env.source --target-env .env.target` (source demo1, target **qa4**, plan only -- `--apply` never passed, no writes to either install). This is the pre-existing regression harness for the original 7 entities (billing_sources, ous, funding_sources, projects, budgets, accounts, scopes); it is unaffected by this pass's changes to `permission_scheme`/`project_cloud_access_role_exemption`/`project_enforcement` or the generic-resource split, since none of those are in the harness's oracle/engine comparison.
 
 **Verdict: EQUIVALENT** -- every entity/action count matched between the independent "oracle" walk and the metadata-driven engine after normalization (plural/singular key aliasing; OU-root `+1`), for all 7 entities and all 6 action buckets (create/recreate/adopt/ok/skipped/failed). No regressions from the metadata safety split introduced in this corrective pass.
+
+
+## Hooks implemented (this pass)
+
+Of the 22 staged resources in the "Hook / read_transform implementation
+worklist" above, **12** were resolvable with only the reuse-only primitives
+this pass was scoped to: `ctx.resolve_owners` (owner_user_ids/
+owner_user_group_ids, degrading safely to the running-user fallback or an
+empty list -- never a hard requirement, since none of these 12 have
+export-time-captured owner emails yet), `ctx.current_user_id` (a required
+scalar "creator" field with no cross-install-preservable source value,
+mirroring OU's existing owner fallback applied to a single field instead of
+a list), or a plain `ctx.id_map[<resource>]` lookup against an
+already-onboarded resource (`account`, `ou`, `project`, `idms`). All 12
+`build_create_payload` hooks are in `kion/overrides/registry.py`, unit
+tested in `tests/test_onboarded_hooks.py`:
+
+`ami`, `azure_role`, `cft`, `compliance_standard`, `iam_policy`,
+`ou_cloud_access_role`, `ou_note`, `project_cloud_access_role`,
+`project_note`, `service_catalog`, `service_control_policy`, `user_group`.
+
+**These hooks are inert as written** -- `engine_meta()` only treats a
+resource as engine-ready once its `natural_keys.yaml` entry is in the
+*active* file, and per the "Status (corrective pass)" section above all 22
+staged resources' entries currently live in
+`kion/meta/natural_keys.staged.yaml`/`references.staged.yaml`, not the
+active files. Promoting these 12 (moving their entries from `.staged.yaml`
+into the active files) is a follow-up metadata-only step, deliberately left
+undone here so it can get its own review/live-verification pass rather than
+riding in silently with hook code.
+
+A recurring, deliberate omission across this batch, worth calling out once
+rather than per-hook: several of these create bodies also carry raw id-list
+fields that reference `user`/`user_group` **outside** the owner convention
+(e.g. `car_restricted_user_ids`/`car_restricted_user_group_ids` on
+`azure_role`/`iam_policy`, `user_ids`/`user_group_ids` on
+`ou_cloud_access_role`/`project_cloud_access_role`, `viewer_user_ids`/
+`viewer_user_group_ids`/plain `user_ids` on `user_group`). `user`/
+`user_group` have no `natural_keys.yaml` kind (see the deferred `user`
+writeup below), so there is no mechanism to translate those particular ids
+across installs. Forwarding them unchanged would silently write wrong or
+colliding ids on the target -- exactly the mis-copy risk this engine exists
+to avoid -- so every such field is left out of the payload entirely. The
+created record is a functional shell missing that one association, the same
+degradation shape as the existing `billing_source` custom/aws/oci shell
+precedent, not a silent data leak.
+
+## Deferred hooks (this pass)
+
+The remaining **10** staged resources were not implemented in this pass
+because their `build_create_payload` cannot be built from the reuse-only
+primitives above -- each needs either a bespoke read-side transform, a
+cross-reference to a *sibling resource this same pass also can't
+reconcile*, or a live-install detail that is explicitly flagged
+unverified in its own proposal. Honesty over coverage: forcing these would
+mean guessing at an unverified read/write shape or silently dropping a
+required reference with no real fallback, which is exactly the kind of gap
+this tool is designed to surface, not paper over.
+
+- **`azure_arm_template`** -- owners are the easy part (same
+  `resolve_owners` pattern as the 12 implemented above), but
+  `resource_group_region_id` is an unverified install-local-vs-global
+  catalog id (analogous to `account_type_id`, but not confirmed): the
+  proposal explicitly flags that whether it's safe to pass through unchanged
+  or needs a region-name relookup against the target is unknown without a
+  live install check. Needs: live-API confirmation of the azure region
+  catalog's cross-install stability (or a region-listing endpoint to
+  relookup by name) before the payload can be written with any confidence.
+
+- **`azure_policy`** -- both the read and create shapes are unverified. The
+  proposal flags it is unknown whether `GET /v3/azure-policy/{id}` returns
+  `owner_users`/`owner_user_groups` at all (unlike the 12 implemented hooks,
+  which only ever call the already-proven `resolve_owners`/
+  `current_user_id` primitives against fields already known to exist), and
+  the create body nests target-scope fields under `azure_policy: {...}` plus
+  owner fields under differently-named top-level keys (`owner_users`/
+  `owner_user_groups`, not `owner_user_ids`/`owner_user_group_ids` like every
+  other owned resource) in a shape (bare ids vs `{id: ...}` objects) that
+  isn't confirmed. Needs: a live-install read of `GET /v3/azure-policy/{id}`
+  and the `AzurePolicyDefinitionCreate` schema to nail down both shapes
+  before a hook can be written, not just wired.
+
+- **`cloud_rule`** -- has 14 total references (13 declared + 2 explicit
+  reference fields per the proposal, `automation_policy_ids` pointing at a
+  resource that doesn't exist anywhere in this engine, plus
+  `internal_ami_ids`/`internal_portfolio_ids` guessed at `ami`/
+  `service_catalog` but explicitly unverified against a live install per its
+  own proposal). It also cross-references several of the *other* resources
+  onboarded in this same pass (`compliance_standard_id`, plus post_/
+  pre_webhook ids), meaning its correctness depends on ordering and
+  behavior this pass doesn't own end-to-end. This is materially more
+  reference-surface than the "simple type/endpoint selection or a couple of
+  id_map lookups" bar for this pass. Needs: live-install verification of
+  every guessed reference target, explicit dropping of
+  `automation_policy_ids`, and reconcile-ordering analysis once its
+  reference targets are themselves confirmed onboardable.
+
+- **`compliance_check`** -- cross-references `azure_policy_id` (itself
+  deferred above, unresolvable) and `compliance_control_ids` (deferred
+  below, unresolvable) as its two non-owner reference fields; with both
+  targets deferred there is nothing straightforward left to resolve beyond
+  owners, and forwarding either raw would leak source ids. Needs:
+  `azure_policy` and `compliance_control` onboarded first (or these two
+  fields permanently omitted, a judgment call better made once those
+  siblings' status is known) before this is worth revisiting.
+
+- **`compliance_control`** -- `cloud_provider_policy_ids`'s target resource
+  type is an explicit guess in the proposal (`iam_policy`, unverified, and
+  possibly per-provider heterogeneous rather than a single homogeneous
+  type), `compliance_levels`'s item shape (bare ids vs `{compliance_level_id,
+  ...}` objects) is unconfirmed, and it has a two-sided association with
+  `compliance_check` (`compliance_check_ids` / the reverse
+  `compliance_control_ids` on `compliance_check`) whose ownership direction
+  the proposal flags as an open design call, not a mechanical lookup. Needs:
+  live-install verification of the reference shapes plus a decision on which
+  side owns the compliance_check<->compliance_control link.
+
+- **`custom_variable`** -- needs a bespoke read-side transform (a new
+  `_EXPORT_READERS`-style reader in `kion/engine/inventory.py` that both
+  preserves `default_value`, which the generic ignores-filter would
+  otherwise drop, and resolves owner ids to emails/names at read time) before
+  any create-side hook is meaningful -- this is read-side work, not just a
+  `build_create_payload` function, so it falls outside this pass's "reuse
+  existing oracle helpers, add a hook function" mandate. Needs: the
+  `inventory.py` reader plus confirmation of whether Kion actually requires
+  >=1 owner on create (schema marks both owner fields optional, unlike
+  OU/project/funding_source) before deciding whether `resolve_owners`'
+  running-user fallback should even apply here.
+
+- **`gcp_iam_role`** -- explicitly proposed as `read_transform`-plus-hook:
+  the read side must resolve *two* id-list pairs to portable
+  emails/names (`owner_user_ids`/`owner_user_group_ids` **and**
+  `car_restricted_user_ids`/`car_restricted_user_group_ids`), and per the
+  proposal the import side must deliberately *not* use `resolve_owners`'
+  running-user fallback (leave both empty on non-resolution instead) --
+  a different, one-off owner-handling contract than every one of the 12
+  hooks implemented in this pass, which all reuse the shared fallback as-is.
+  Needs: the export-side owner+restriction email/name capture (new code,
+  not a reuse of an existing oracle helper) plus live confirmation of
+  whether the detail read exposes raw id lists or embedded objects.
+
+- **`idms_open_id`** -- `access_rules`' real runtime shape is unverified
+  (likely `[{idms_group/claim_value, app_role_id, ...}]` per the proposal,
+  but unconfirmed), and even if confirmed, `app_role` has no natural-key
+  mapping usable as a target here in a way this pass's reuse-only mandate
+  covers -- the proposal's own recommendation is to omit `access_rules`
+  and surface a manual-follow-up note in the plan output, which is a new UX
+  behavior (a plan-time warning class), not a `build_create_payload`
+  reuse. Needs: either that new warning mechanism, or live confirmation
+  `access_rules` can be safely omitted with no create-time validation error.
+
+- **`permission_scheme`** -- the identity/owner parts are trivial (`name`,
+  `type` pass through unchanged, no owner fields exist on this resource at
+  all), but `roles` cannot be modeled as a `references.yaml` entry or
+  resolved with any of this pass's reuse primitives: `references.yaml`'s
+  flat `{field, target, key, many, optional}` shape has no way to express a
+  reference *nested inside an array of objects* (`roles` is
+  `[{permission_id, role_ids[]}, ...]`, not a flat id or id-list field), and
+  the proposal flags it is unverified whether the by-id read even returns
+  this exploded shape or the flat `roles` the create body wants. This needs
+  bespoke read-side unexploding **and** create-side re-nesting logic
+  end-to-end -- the definition of "not straightforward" for this pass, even
+  though the one real reference within it (`role_ids` -> `app_role`, itself
+  already onboarded generic) would otherwise be a one-line `id_map` lookup.
+  Needs: live-install confirmation of the read shape, then bespoke
+  (non-reusable) nested-array remap code -- not in scope for this pass's
+  reuse-only hooks.
+
+- **`user`** (`read_transform`) -- doesn't need a `build_create_payload`
+  hook at all (per its own proposal, the generic create path is sufficient
+  once `idms_id`/`user_group_ids` are metadata-mapped), but it does need a
+  new `_read_users`-style reader registered in
+  `kion/engine/inventory.py` (to synthesize `name := username` before the
+  natural-key step) **and** a matching branch in
+  `EngineReconciler._index_target` (mirroring the existing `billing_source`
+  special case) so target users index correctly too. Both are read/index
+  infrastructure changes to `kion/engine/inventory.py`/`reconcile.py`
+  itself, not a `registry.py` hook -- outside this pass's scope, which was
+  limited to adding hooks that reuse existing ctx/oracle surface, never
+  modifying the engine's read or indexing machinery.
