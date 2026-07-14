@@ -146,8 +146,20 @@ no resolvable project → the cache).
   **before** scopes for this reason.
 - **Billing sources** (`/v4/billing-source`, paginated): the read exposes config
   but **never secrets** (`key_secret`, AWS `linked_role`, OCI `private_key`,
-  Azure/GCP creds are redacted). Import recreates **custom/aws/oci** as
-  non-functional shells (`skip_validation` + placeholders the customer replaces);
+  Azure/GCP creds are redacted). Import recreates **custom/aws/oci** with
+  `skip_validation` (a **create-time-only** flag that bypasses the connection test;
+  it is **not** a persisted attribute, so the edit UI shows the "Skip Billing Source
+  Validation" checkbox unchecked afterward — that does not mean the source is a
+  shell). What actually differs by type:
+  - **custom** (e.g. FOCUS sources): the full `aws_connection` (report bucket /
+    prefix / region) is copied verbatim — there is **no secret** to redact (S3 is
+    role-assumed), so these come over **functional**, ingesting spend as soon as the
+    target can reach that bucket/role. Not shells.
+  - **aws / oci**: connection config copies, but the real secrets the read redacts
+    (`linked_role` for aws; `fingerprint`/`private_key` for oci) go in as
+    `REPLACE-ON-TARGET` placeholders — these ARE non-functional until the customer
+    edits in the real values.
+
   **gcp/azure/anthropic** are exported but skipped (need a prerequisite service
   account or provider registration flow). Adopted by name.
 

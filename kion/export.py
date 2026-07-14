@@ -146,8 +146,10 @@ BILLING_TYPE_KEYS = {
 
 def _export_billing_sources(client) -> list[dict]:
     """Export billing sources (/v4/billing-source). The read API exposes connection
-    config but never secrets (keys/role trust are redacted), so these recreate as
-    non-functional shells — see import for which types can be recreated at all.
+    config but never secrets (keys/role trust are redacted). On import, custom
+    (e.g. FOCUS) sources copy their full aws_connection and come over functional;
+    aws/oci copy config but their redacted secrets go in as placeholders (shells the
+    customer completes) — see import for which types can be recreated at all.
     """
     try:
         resp = client.get("/v4/billing-source")
