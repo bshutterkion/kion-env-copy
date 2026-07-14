@@ -209,3 +209,56 @@ def test_ou_post_create_noop_when_root_already_known():
     ctx = SimpleNamespace(target_root_id=500)
     HOOKS["ou"].post_create({"name": "Team", "parent_ou_id": 500}, 900, ctx)
     assert ctx.target_root_id == 500
+
+
+# -- billing_source hook (10d) ----------------------------------------------
+
+def test_billing_source_hook_builds_custom_payload():
+    """Reuses Importer._billing_payload directly -- custom sources recreate as
+    shells with skip_validation set."""
+    ctx = SimpleNamespace(warnings=[])
+    fields = {
+        "name": "BS1", "type": "custom",
+        "config": {"billing_start_date": "2024-01-01", "aws_connection": {}},
+    }
+    paths, payload = HOOKS["billing_source"].build_create_payload(fields, ctx)
+    assert paths == ["/v3/billing-source/custom"]
+    assert payload == {
+        "name": "BS1",
+        "billing_start_date": "2024-01-01",
+        "aws_connection": {},
+        "skip_validation": True,
+    }
+    assert ctx.warnings == []
+
+
+def test_billing_source_hook_skips_gcp_and_warns():
+    """gcp/azure/anthropic have no create path -- the hook returns None (skip)
+    and appends a warning mirroring Importer._reconcile_billing_sources."""
+    ctx = SimpleNamespace(warnings=[])
+    fields = {"name": "BS2", "type": "gcp", "config": {}}
+    assert HOOKS["billing_source"].build_create_payload(fields, ctx) is None
+    assert len(ctx.warnings) == 1
+    assert "BS2" in ctx.warnings[0]
+    assert "skipped" in ctx.warnings[0]
+
+
+# -- account post_create (10d) -----------------------------------------------
+
+def test_account_post_create_registers_number_and_id():
+    ctx = SimpleNamespace(t_acct_by_number={}, t_acct_ids=set())
+    HOOKS["account"].post_create({"account_number": "111122223333"}, 42, ctx)
+    assert ctx.t_acct_by_number == {"111122223333": 42}
+    assert ctx.t_acct_ids == {42}
+
+
+def test_account_post_create_noop_when_number_blank():
+    ctx = SimpleNamespace(t_acct_by_number={}, t_acct_ids=set())
+    HOOKS["account"].post_create({"account_number": ""}, 42, ctx)
+    assert ctx.t_acct_by_number == {}
+    assert ctx.t_acct_ids == set()
+
+    ctx2 = SimpleNamespace(t_acct_by_number={}, t_acct_ids=set())
+    HOOKS["account"].post_create({}, 43, ctx2)
+    assert ctx2.t_acct_by_number == {}
+    assert ctx2.t_acct_ids == set()

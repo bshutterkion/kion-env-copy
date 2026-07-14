@@ -63,7 +63,8 @@ class EngineReconciler:
         self.groups: dict = {}
         self.target_root_id = None
         self.current_user_id = None
-        self.t_acct_by_number: dict = {}  # account hook (10c) fills this as it creates
+        self.t_acct_by_number: dict = {}  # account hook fills this as it creates (10d)
+        self.t_acct_ids: set = set()      # account hook fills this as it creates (10d)
         self._owner_fallback = 0
 
         self._placeholder = 0

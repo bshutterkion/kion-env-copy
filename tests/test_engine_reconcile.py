@@ -395,3 +395,40 @@ def test_plan_recreates_when_mapped_id_missing_from_target():
     r.run()
     assert r.counts["thing"]["recreate"] == 1
     assert r.counts["thing"]["create"] == 0
+
+
+def test_t_acct_ids_initialized_empty_set():
+    """(10d) t_acct_by_number/t_acct_ids exist as safe empties so the account
+    hook's post_create never AttributeErrors before _index_target runs."""
+    r = EngineReconciler(client=None, config=None, inventory={},
+                         meta={}, refs={}, nkeys={}, apply=False)
+    assert r.t_acct_by_number == {}
+    assert r.t_acct_ids == set()
+
+
+def test_reconciler_calls_hook_post_create_after_create(monkeypatch):
+    """(10d) A registered hook's post_create fires after a successful create,
+    with the created id -- generic wiring already used by the OU hook (10c),
+    confirmed here directly against a fake hook (Finding 2 style)."""
+    inv = {"thing": [{"source_id": 1, "natural_key": ("a",), "fields": {"name": "A"}}]}
+    r = EngineReconciler(client=None, config=None, inventory=inv,
+                         meta=_meta(), refs={"thing": []},
+                         nkeys={"thing": {"kind": "name"}}, apply=False)
+    r._t_key = {"thing": {}}
+    r._t_ids = {"thing": set()}
+
+    seen = {}
+    def fake_post_create(fields, new_id, ctx):
+        seen["fields"] = fields
+        seen["new_id"] = new_id
+        seen["ctx"] = ctx
+
+    monkeypatch.setitem(reconcile_mod.HOOKS, "thing", Hooks(
+        build_create_payload=lambda fields, ctx: (["/v3/hooked"], {"name": fields["name"]}),
+        post_create=fake_post_create,
+    ))
+
+    r.run()
+    assert seen["fields"] == {"name": "A"}
+    assert seen["ctx"] is r
+    assert seen["new_id"] == r.id_map["thing"]["1"]

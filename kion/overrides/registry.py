@@ -33,6 +33,30 @@ def _account_payload(rec, ctx):
         path, payload = account_cache_payload(rec, payer_new)
     return [path], payload
 
+def _account_post_create(fields, new_id, ctx):
+    """Register a newly-created account by number so the later scope pass (Task
+    10e) can resolve it, mirroring ``Importer._reconcile_accounts``' post-create
+    lines (``self._t_acct_by_number[num] = new_id; self._t_acct_ids.add(new_id)``)."""
+    num = fields.get("account_number")
+    if num:
+        ctx.t_acct_by_number[num] = new_id
+        ctx.t_acct_ids.add(new_id)
+
+
+def _billing_source_payload(fields, ctx):
+    """Reuse ``Importer._billing_payload`` directly (do not duplicate the
+    per-type payloads). custom/aws/oci recreate as shells; gcp/azure/anthropic
+    have no API recreate path and are skipped -- mirroring
+    ``Importer._reconcile_billing_sources``' skip warning."""
+    from kion.import_ import Importer
+    path, payload = Importer._billing_payload(fields)
+    if path is None:
+        reason = payload
+        ctx.warnings.append(f"billing source '{fields.get('name')}': skipped — {reason}")
+        return None
+    return [path], payload
+
+
 def _funding_source_payload(rec, ctx):
     label = f"funding source '{rec.get('name')}'"
     ou_new = ctx.id_map["ou"].get(str(rec.get("__srcid__ou_id"))) or ctx.target_root_id
@@ -162,6 +186,7 @@ HOOKS = {
     "account": Hooks(
         build_create_payload=_account_payload,
         identity_ok=lambda rec, ctx: bool(rec.get("account_number")),
+        post_create=_account_post_create,
     ),
     "funding_source": Hooks(build_create_payload=_funding_source_payload),
     "project": Hooks(build_create_payload=_project_payload),
@@ -172,6 +197,7 @@ HOOKS = {
         build_create_payload=_ou_payload,
         post_create=_ou_post_create,
     ),
-    # billing_source, budget, scope hooks are added in Task 10d as those
-    # entities are onboarded (kept here so the registry is the single seam).
+    "billing_source": Hooks(build_create_payload=_billing_source_payload),
+    # budget, scope hooks are added in Task 10e as those entities are onboarded
+    # (kept here so the registry is the single seam).
 }
