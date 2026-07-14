@@ -100,8 +100,13 @@ class EngineReconciler:
 
         Factored out so tests can set ``_t_key``/``_t_ids`` by hand and skip the
         network entirely (``run()`` only calls this when they're still empty).
+
+        Scoped to ``self.inventory`` (the resources actually being reconciled),
+        not all of ``self.meta`` — ``self.meta`` is the full ~30-resource
+        generator_config, and most of those aren't in play for a given run.
         """
-        for res, rm in self.meta.items():
+        for res in self.inventory:
+            rm = self.meta[res]
             read_path = getattr(rm, "read_path", None)
             if not read_path:
                 self._t_key.setdefault(res, {})
