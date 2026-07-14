@@ -3,21 +3,38 @@
 Date: 2026-07-14
 Status: draft (pending review)
 
-## Umbrella goal
+## Purpose & goals
 
-Make `kion-env-copy` able to copy **every resource the Kion Terraform provider
-supports** (the codegen provider at
-`…/delivery-support/dev-tools/terraform-provider/new-terraform-provider`: 50
-resources) between installs, keeping the tool's existing snapshot → plan → apply
-reconcile model and its current billing/budget/scope coverage (a superset). This
-copy capability is also the foundation for a later goal (#2): generating Terraform
-(`.tf` + import blocks) for a whole install from the same metadata + snapshot.
+`kion-env-copy` lets a user copy their environment — and sub-resources within it — to
+a **new environment**, for users who don't want to manage their install via
+`terraform import` → `terraform apply` elsewhere. It is the **easier-than-Terraform**
+path. Two goals build on the same foundation:
 
-Doing this by hand-writing 50 exporters/importers would replicate — and drift from —
-knowledge the provider already encodes in machine-readable form. Instead the tool
-becomes **metadata-driven**: a generic reconcile engine reads the provider's codegen
-metadata + OpenAPI spec, with a small authored override layer for the cross-install
-concerns the provider doesn't model.
+- **#1 (this track): copy parity.** Copy **every resource the Kion Terraform provider
+  supports** (the codegen provider at
+  `…/delivery-support/dev-tools/terraform-provider/new-terraform-provider`: 50
+  resources) between installs, keeping the tool's snapshot → plan → apply reconcile
+  model and its current billing/budget/scope coverage (a superset).
+- **#2 (later): terraform-importer replacement.** Become the successor to the old
+  `terraform-importer` (`importer-script/` in the *old* provider — a Python tool that
+  reads an install and emits HCL config + `terraform import` commands + module/
+  provider files via `templates.py`, but only for a subset: CFTs, IAM/Azure policies,
+  Azure/OU/project roles, cloud rules, compliance). The new tool does the same
+  `terraform import` job with **full 50-resource coverage** and the **new provider's**
+  resource types/schemas.
+
+The unifying insight: **both goals need the same thing first** — a complete,
+id-and-natural-key-resolved **inventory** of an install. #1 feeds that inventory to a
+*reconcile* adapter (write to a target env); #2 feeds the *same* inventory to a
+*terraform-emit* adapter (write HCL + import commands). So the engine is built as an
+**inventory core + pluggable output adapters**, and #2 is a second adapter, not a
+rewrite.
+
+Doing this by hand-writing 50 exporters would replicate — and drift from — knowledge
+the provider already encodes in machine-readable form. Instead the tool becomes
+**metadata-driven**: a generic engine reads the provider's codegen metadata + OpenAPI
+spec, with a small authored override layer for the cross-install concerns the
+provider doesn't model.
 
 Because this is far too large for one spec, it is **decomposed into sub-projects**.
 This document specifies **SP1 (the engine foundation)** only. SP2…SPn each get their
@@ -39,7 +56,9 @@ own spec.
   5. compliance (check, standard, family, level, program)
   6. metadata/config (label, custom_variable(+override), app_config, notes, webhook,
      service_catalog, dashboard, gcp_service_account, billing_rule, forecast, category)
-- **Later — #2 TF generation**, a separate consumer of the same metadata + snapshot.
+- **Later — #2 terraform-emit adapter** (terraform-importer replacement): a second
+  output adapter over the same inventory core, emitting HCL + `terraform import`
+  commands with full 50-resource coverage. Its own spec.
 
 ## What the provider already gives us (vendored, read-only)
 
@@ -79,26 +98,40 @@ SP1.
 
 ## Engine architecture
 
-Three layers, mirroring how the provider's own codegen separates generic rendering
-from archetype overrides:
+**Inventory core + pluggable output adapters.** The core walks an install into a
+normalized, adapter-agnostic inventory; adapters turn that inventory into side
+effects. SP1 builds the core + the reconcile adapter; #2 adds the terraform-emit
+adapter against the same core.
 
 1. **Metadata layer** (`kion/meta/`, vendored copies + loaders): parse the provider
    yamls + `openapi3.json` into an in-memory `ResourceMeta` per resource (op set,
    ignores, archetype, memberships, references, natural key).
-2. **Engine layer** (`kion/engine/`):
-   - **Exporter**: resources in dependency order → call `read`/list op → strip
-     `ignores` → translate reference fields (id → natural key) → snapshot section.
-   - **Reconciler**: topological order over the reference graph → per record choose
-     ok/adopt/create/recreate/drift/skip (generalizing today's `Importer`) → create
-     via the `create` op → record id-map → remap references on the way in →
-     plan/apply.
-3. **Override/hook layer** (`kion/overrides/`): a registry of Python callables keyed
+2. **Inventory core** (`kion/engine/`):
+   - **Reader/exporter**: resources in dependency order → call `read`/list op → strip
+     `ignores` → for each record capture `{resource, source_id, natural_key,
+     fields}` where reference fields are resolved to the **target natural key** while
+     the **source id is retained**. This dual form is what makes one inventory serve
+     both adapters (reconcile needs the natural key to remap; terraform-emit needs
+     the source id for `terraform import` and the natural key for HCL references).
+3. **Output adapters** (`kion/adapters/`):
+   - **Reconcile adapter** (SP1): topological order over the reference graph → per
+     record choose ok/adopt/create/recreate/drift/skip (generalizing today's
+     `Importer`) → create via the `create` op → record id-map → remap references on
+     the way in → plan/apply.
+   - **Terraform-emit adapter** (#2, later): same inventory → HCL config + `terraform
+     import` commands + module/provider files. The old `importer-script/`
+     (`templates.py`, `write_module_file`, `write_provider_file`,
+     `write_resource_import_script`) is the reference/oracle for its output shape.
+4. **Override/hook layer** (`kion/overrides/`): a registry of Python callables keyed
    by resource for behaviors that can't be declared (see next section). Standard
    resources need none; gnarly ones plug in. This is the escape hatch that keeps the
-   engine generic without pretending the API is uniform.
+   core generic without pretending the API is uniform.
 
 `_post`-style candidate-endpoint probing, retry/backoff, and the `{status,data}` /
 `{record_id,status}` envelope handling stay in the existing `client.py`.
+
+SP1 does **not** build the terraform-emit adapter — it only keeps the inventory
+boundary adapter-agnostic (dual id + natural-key form above) so #2 drops in cleanly.
 
 ## Special behaviors SP1 must preserve (the 7 exercise all of these)
 
@@ -151,7 +184,8 @@ the concrete gate for "reproduces the 7."
 ## Out of scope (SP1)
 
 - The other 43 resources (SP2…SPn).
-- #2 Terraform generation.
+- #2 terraform-emit adapter (HCL + `terraform import` generation) — separate spec;
+  SP1 only keeps the inventory boundary adapter-ready.
 - Removing/retiring `export.py`/`import_.py` (they stay as the reference oracle
   until the engine matches; retirement is a later, separate step).
 - Any change to `client.py` transport behavior.
