@@ -206,6 +206,27 @@ def test_index_target_skips_ctx_reads_when_config_none():
     assert calls == ["/x"]  # no /v3/permission-scheme etc.
 
 
+def test_index_target_warns_on_target_list_failure():
+    """A failing target-side list read must append a 'list failed' warning
+    (restoring pre-Task-10a visibility) rather than silently indexing nothing
+    for that resource, which would make every record plan as create instead
+    of adopt with no diagnostic (the finding this test guards against)."""
+    from kion.client import KionAPIError
+
+    class FailingClient:
+        def get(self, path, params=None):
+            raise KionAPIError(503, "GET", path, "unavailable")
+
+    inv = {"thing": [{"source_id": 1, "natural_key": ("a",), "fields": {"name": "A"}}]}
+    r = EngineReconciler(client=FailingClient(), config=None, inventory=inv,
+                         meta=_meta(), refs={"thing": []},
+                         nkeys={"thing": {"kind": "name"}}, apply=False)
+    r._index_target()
+    assert r._t_key["thing"] == {}
+    assert r._t_ids["thing"] == set()
+    assert any("target thing list failed: 503" in w for w in r.warnings)
+
+
 def test_plan_recreates_when_mapped_id_missing_from_target():
     inv = {"thing": [{"source_id": 1, "natural_key": ("a",), "fields": {"name": "A"}}]}
     r = EngineReconciler(client=None, config=None, inventory=inv,

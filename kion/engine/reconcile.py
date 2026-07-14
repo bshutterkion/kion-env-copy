@@ -164,7 +164,11 @@ class EngineReconciler:
                 self._t_ids.setdefault(res, set())
                 continue
             lp = list_path(read_path)  # shared with kion.engine.inventory
-            records = list_records(self.client, lp)  # shared unwrap + pagination
+
+            def _on_error(path, e, res=res):
+                self.warnings.append(f"target {res} list failed: {e.status}")
+
+            records = list_records(self.client, lp, on_error=_on_error)  # shared unwrap + pagination
 
             key_map, ids = {}, set()
             for rec in records:

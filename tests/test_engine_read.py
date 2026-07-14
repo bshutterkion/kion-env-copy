@@ -63,3 +63,38 @@ def test_list_records_swallows_api_error():
         def get(self, path, params=None):
             raise KionAPIError(500, "GET", path, "boom")
     assert list_records(C(), "/x") == []
+
+
+def test_list_records_calls_on_error_and_still_returns_empty():
+    """A KionAPIError must be reported via on_error (so a target-side read
+    failure isn't indistinguishable from 'genuinely zero records' — the
+    finding this test guards against), but list_records still degrades to []
+    rather than raising."""
+    from kion.client import KionAPIError
+
+    class C:
+        def get(self, path, params=None):
+            raise KionAPIError(503, "GET", path, "unavailable")
+
+    seen = []
+
+    def on_error(path, exc):
+        seen.append((path, exc))
+
+    result = list_records(C(), "/x", on_error=on_error)
+    assert result == []
+    assert len(seen) == 1
+    assert seen[0][0] == "/x"
+    assert isinstance(seen[0][1], KionAPIError)
+    assert seen[0][1].status == 503
+
+
+def test_list_records_on_error_none_still_returns_empty_without_raising():
+    """Explicitly passing on_error=None (or omitting it) preserves the
+    original silent-degrade behavior for callers that don't opt in."""
+    from kion.client import KionAPIError
+
+    class C:
+        def get(self, path, params=None):
+            raise KionAPIError(500, "GET", path, "boom")
+    assert list_records(C(), "/x", on_error=None) == []

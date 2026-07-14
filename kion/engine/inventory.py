@@ -13,12 +13,20 @@ endpoint a resource's records come from).
 """
 from __future__ import annotations
 
+import sys
+
 from kion.engine.keys import natural_key
 from kion.engine.order import order_resources
 from kion.engine.paths import list_path
 from kion.engine.read import list_records
 from kion.engine.refmap import to_natural
 from kion.export import _account_record
+
+
+def _on_read_error(path, exc) -> None:
+    """Surface a list-read failure to stderr, in the style of ``export._warn``
+    (``build_inventory`` has no warnings list to append to)."""
+    print(f"  ! {path} list failed: {exc.status}", file=sys.stderr)
 
 
 def _parent_target(res: str, parent_field: str, refs: dict) -> str:
@@ -73,9 +81,9 @@ def _read_accounts(client, res_refs, id_to_key) -> list[dict]:
     ids survive as ``__srcid__payer_id``/``__srcid__project_id`` for the 10c
     account hook. Natural key is ``(account_number,)``."""
     raw = [_account_record(a, cached=False)
-           for a in (list_records(client, "/v3/account") or [])]
+           for a in (list_records(client, "/v3/account", on_error=_on_read_error) or [])]
     raw += [_account_record(a, cached=True)
-            for a in (list_records(client, "/v3/account-cache") or [])]
+            for a in (list_records(client, "/v3/account-cache", on_error=_on_read_error) or [])]
 
     out = []
     for rec in raw:
@@ -107,7 +115,7 @@ def build_inventory(client, meta: dict, refs: dict, nkeys: dict,
 
         rm = meta[res]
         path = list_path(getattr(rm, "read_path", None))
-        records = list_records(client, path) if path else []
+        records = list_records(client, path, on_error=_on_read_error) if path else []
         ignores = set(getattr(rm, "ignores", None) or [])
 
         out = []
