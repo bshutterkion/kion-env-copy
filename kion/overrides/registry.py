@@ -369,6 +369,95 @@ def _budget_reconcile(ctx, records):
             _diagnose_budget_failure(ctx, fields, label, oversub)
 
 
+# -- scope (10g) -----------------------------------------------------------
+# scope does NOT fit the generic list+natural-key create path: adoption is
+# ``(target_project, name)`` and the create remaps account *numbers* to target
+# account ids inside ``criteria.account_criteria.account_ids`` (>=1 must exist)
+# with an "Invalid scope criteria" failure diagnostic. So scope uses a
+# whole-resource ``reconcile_override`` -- a faithful port of
+# ``Importer._reconcile_scopes`` through the engine machinery
+# (ctx.id_map / ctx._t_key / ctx._t_ids / ctx.t_acct_by_number / ctx._post /
+# ctx._last_error / ctx.counts / ...). The engine keys everything on the
+# SINGULAR resource name ``"scope"`` (Importer used the plural ``"scopes"``).
+# The source scope id lives in ``rec["source_id"]`` (the export field
+# ``source_scope_id`` popped by inventory._finish_export_record) -- the standard
+# inventory contract every override reads; its value is the source scope id.
+
+def _scope_reconcile(ctx, records):
+    """Whole-resource reconcile for scope (see the section header). Faithful port
+    of ``Importer._reconcile_scopes``: resolve the target project via id_map,
+    OK/adopt against the engine-built target scope index (keyed
+    ``(target_project_id, nkey(name))``), else create with account numbers
+    remapped to target ids (>=1 required) and diagnose an "Invalid scope
+    criteria" create failure."""
+    print("\nscope:")
+    t_key = ctx._t_key.setdefault("scope", {})
+    t_ids = ctx._t_ids.setdefault("scope", set())
+    id_map = ctx.id_map.setdefault("scope", {})
+    for rec in records:
+        fields = rec["fields"]
+        src = rec["source_id"]
+        label = f"scope '{fields.get('name')}'"
+        src_proj = fields.get("__srcid__project_id")
+        proj_new = ctx.id_map["project"].get(str(src_proj))
+        if proj_new is None:
+            ctx.warnings.append(f"{label}: project {src_proj} unresolved, skipped")
+            ctx.skipped["scope"] += 1
+            continue
+
+        key = (proj_new, nkey(fields.get("name")))
+        mapped = id_map.get(str(src))
+        if mapped is not None and mapped in t_ids:
+            ctx._note_ok("scope", label)
+            continue
+        if key in t_key:
+            found = t_key[key]
+            id_map[str(src)] = found
+            ctx.counts["scope"]["adopt"] += 1
+            print(f"  = adopt {label} (existing id {found})")
+            continue
+
+        # Account criteria require >=1 real account; remap by account_number.
+        numbers = fields.get("account_numbers") or []
+        acct_ids, missing = [], []
+        for n in numbers:
+            tid = ctx.t_acct_by_number.get(n)
+            (acct_ids if tid is not None else missing).append(tid if tid is not None else n)
+        for m in missing:
+            ctx.warnings.append(f"{label}: account {m} not on target, dropped")
+        if not acct_ids:
+            ctx.warnings.append(
+                f"{label}: none of its {len(numbers)} account(s) exist on target "
+                f"(scope needs >=1) — skipped")
+            ctx.skipped["scope"] += 1
+            continue
+
+        criteria = dict(fields.get("criteria") or {})
+        ac = dict(criteria.get("account_criteria") or {})
+        ac["type"] = ac.get("type") or "account_ids"
+        ac["account_ids"] = acct_ids
+        criteria["account_criteria"] = ac
+
+        action = "recreate" if mapped is not None else "create"
+        payload = {
+            "name": fields.get("name"),
+            "alias": fields.get("alias") or "",
+            "description": fields.get("description") or "",
+            "project_id": proj_new,
+            "start_datecode": fields.get("start_datecode"),
+            "end_datecode": fields.get("end_datecode"),
+            "criteria": criteria,
+        }
+        new_id = ctx._post("scope", "/beta/scope", payload, src, action, label)
+        if new_id is not None:
+            id_map[str(src)] = new_id
+        elif ctx._last_error and "Invalid scope criteria" in (ctx._last_error.body or ""):
+            ctx.warnings.append(
+                f"{label}: → cause: a condition references a tag key / region / "
+                f"service the target hasn't ingested billing data for "
+                f"(create only succeeds once that data exists on the target)")
+
+
 HOOKS = {
     "account": Hooks(
         build_create_payload=_account_payload,
@@ -386,6 +475,5 @@ HOOKS = {
     ),
     "billing_source": Hooks(build_create_payload=_billing_source_payload),
     "budget": Hooks(reconcile_override=_budget_reconcile),
-    # scope hook is added in Task 10g as that entity is onboarded (kept here so
-    # the registry is the single seam).
+    "scope": Hooks(reconcile_override=_scope_reconcile),
 }
