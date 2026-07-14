@@ -20,7 +20,12 @@ from kion.engine.order import order_resources
 from kion.engine.paths import list_path
 from kion.engine.read import list_records
 from kion.engine.refmap import to_natural
-from kion.export import _account_record
+from kion.export import (
+    _account_record,
+    _export_billing_sources,
+    _export_budgets,
+    _export_scopes,
+)
 from kion.import_ import order_ous
 
 
@@ -111,6 +116,73 @@ def _read_accounts(client, res_refs, id_to_key) -> list[dict]:
     return out
 
 
+# Bespoke, export-shaped readers (billing_source/budget/scope): each reuses the
+# matching ``export._export_*`` function -- reference implementations for these
+# entities' transforms already exist there and must not be re-ported. Every
+# export record uses a different field name for its own id, so it can't be
+# popped generically the way the raw list-read loop pops "id".
+_EXPORT_ID_FIELD = {
+    "billing_source": "source_id",
+    "budget": "source_budget_id",
+    "scope": "source_scope_id",
+}
+
+
+def _read_billing_sources(client) -> list[dict]:
+    return _export_billing_sources(client)
+
+
+def _read_budgets(client) -> list[dict]:
+    """``export._export_budgets`` needs the source OUs/projects (with raw ``id``
+    keys) to walk each one's ``/v3/{ou,project}/{id}/budget``. Read them
+    directly rather than depending on ``build_inventory``'s main loop having
+    already processed those resources (mirrors ``_read_accounts`` hardcoding
+    its own endpoint paths)."""
+    ous = list_records(client, "/v3/ou", on_error=_on_read_error) or []
+    projects = list_records(client, "/v3/project", on_error=_on_read_error) or []
+    return _export_budgets(client, ous, projects)
+
+
+def _read_scopes(client) -> list[dict]:
+    return _export_scopes(client)
+
+
+_EXPORT_READERS = {
+    "billing_source": _read_billing_sources,
+    "budget": _read_budgets,
+    "scope": _read_scopes,
+}
+
+# scope.account_numbers is already translated to stable account-number STRINGS
+# by ``_export_scopes`` itself (not raw source ids) -- running it through the
+# generic ``to_natural``, which looks up ``id_to_key`` by numeric source id,
+# would silently drop every entry. Excluded here; a later scope hook resolves
+# these numbers directly via ``t_acct_by_number`` (see reconcile._index_target).
+_EXCLUDE_TO_NATURAL = {"scope": {"account_numbers"}}
+
+
+def _finish_export_record(res: str, rec: dict, nkeys: dict, refs: dict,
+                           id_to_key: dict) -> dict:
+    """Common post-step for a bespoke, export-shaped reader (billing_source,
+    budget, scope): pop the export record's id field, compute the natural key,
+    translate reference fields to natural keys via ``to_natural`` (retaining
+    each as ``__srcid__<field>``, skipping any field the resource excludes --
+    see ``_EXCLUDE_TO_NATURAL``), and accumulate ``id_to_key``. Mirrors the
+    per-record body of the generic list-read loop below, minus the ignores
+    filter -- export already shaped ``fields``, so there is nothing extra to
+    strip."""
+    fields = dict(rec)
+    source_id = fields.pop(_EXPORT_ID_FIELD[res])
+    key = _record_key(res, fields, nkeys, refs, id_to_key)
+    id_to_key[(res, source_id)] = key
+
+    exclude = _EXCLUDE_TO_NATURAL.get(res, set())
+    res_refs = [r for r in refs.get(res, []) if r.field not in exclude]
+    fields = to_natural(fields, res_refs, id_to_key)
+
+    return {"source_id": source_id, "natural_key": key, "fields": fields}
+
+
 def build_inventory(client, meta: dict, refs: dict, nkeys: dict,
                      resources: list[str]) -> dict[str, list[dict]]:
     """Read ``resources`` off ``client`` in dependency order and return
@@ -127,6 +199,17 @@ def build_inventory(client, meta: dict, refs: dict, nkeys: dict,
         # can't go through the generic single-list path (see _read_accounts).
         if res == "account":
             inventory[res] = _read_accounts(client, res_refs, id_to_key)
+            continue
+
+        # billing_source/budget/scope: obtain export-shaped records from the
+        # matching export._export_* reader, then run the SAME post-step as
+        # every other resource (no forked/duplicated post-step).
+        if res in _EXPORT_READERS:
+            raw = _EXPORT_READERS[res](client)
+            inventory[res] = [
+                _finish_export_record(res, rec, nkeys, refs, id_to_key)
+                for rec in raw
+            ]
             continue
 
         rm = meta[res]

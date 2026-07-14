@@ -406,6 +406,38 @@ def test_t_acct_ids_initialized_empty_set():
     assert r.t_acct_ids == set()
 
 
+def test_index_target_prepopulates_t_acct_from_existing_accounts():
+    """(10f) t_acct_by_number/t_acct_ids must be populated from the target's
+    EXISTING accounts (associated + cached) during _index_target, not just from
+    ones this run creates -- so the scope pass can resolve accounts adopted
+    here. Associated wins over a same-numbered cache entry (mirrors
+    Importer._index_target)."""
+    class Client:
+        DATA = {
+            "/v3/account": [{"id": 1, "account_number": "111"},
+                            {"id": 2, "account_number": "222"}],
+            "/v3/account-cache": [{"id": 3, "account_number": "333"},
+                                  {"id": 4, "account_number": "222"}],  # dup -> assoc wins
+        }
+
+        def get(self, path, params=None):
+            return self.DATA.get(path, [])
+
+    m = M(); m.read_path = "/v3/account/{id}"; m.ignores = []; m.name = "account"
+    inv = {"account": [{"source_id": 1, "natural_key": ("111",), "fields": {}}]}
+    r = EngineReconciler(client=Client(), config=None, inventory=inv,
+                         meta={"account": m}, refs={"account": []},
+                         nkeys={"account": {"kind": "account_number"}}, apply=False)
+    r._index_target()
+    assert r.t_acct_by_number == {"111": 1, "222": 2, "333": 3}
+    assert r.t_acct_ids == {1, 2, 3, 4}
+    # the normal target index is unaffected -- both buckets are still adoptable
+    # (last-wins on the number-keyed map for a duplicate number, unlike
+    # t_acct_by_number's associated-wins setdefault above)
+    assert r._t_key["account"] == {("111",): 1, ("222",): 4, ("333",): 3}
+    assert r._t_ids["account"] == {1, 2, 3, 4}
+
+
 def test_reconciler_calls_hook_post_create_after_create(monkeypatch):
     """(10d) A registered hook's post_create fires after a successful create,
     with the created id -- generic wiring already used by the OU hook (10c),

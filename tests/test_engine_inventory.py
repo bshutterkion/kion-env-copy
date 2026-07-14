@@ -75,3 +75,101 @@ def test_inventory_reads_accounts_union_with_namespacing():
     assert by_src["cache:2"]["fields"]["cached"] is True
     assert by_src["cache:2"]["fields"]["project_id"] is None
     assert by_src["cache:2"]["fields"]["__srcid__project_id"] is None
+
+
+def test_inventory_reads_billing_sources_via_export_shaping():
+    """billing_source records come from export._export_billing_sources (not the
+    generic raw list read) -- export shape (type/name/config), natural_key
+    (nkey(name),), no references."""
+    from kion.meta.load import ResourceMeta
+    m = {"billing_source": ResourceMeta("billing_source", read_path="/v4/billing-source",
+                                        read_method="GET")}
+    client = StubClient({
+        "/v4/billing-source": [
+            {"id": 7, "aws_payer": {"name": "Payer One"}, "account_creation": True,
+             "use_focus_reports": False, "use_proprietary_reports": True},
+        ],
+    })
+    refs = {"billing_source": []}
+    nk = {"billing_source": {"kind": "name"}}
+    inv = build_inventory(client, m, refs, nk, ["billing_source"])
+    recs = inv["billing_source"]
+    assert len(recs) == 1
+    rec = recs[0]
+    assert rec["source_id"] == 7
+    assert rec["natural_key"] == ("payer one",)
+    assert rec["fields"]["type"] == "aws"
+    assert rec["fields"]["name"] == "Payer One"
+    assert rec["fields"]["config"] == {"name": "Payer One"}
+
+
+def test_inventory_reads_budgets_via_export_shaping():
+    """budget records come from export._export_budgets(client, ous, projects) --
+    build_inventory supplies the source OUs/projects itself. fields['data']
+    (funding_source_ids) survives untouched, and __srcid__ou_id/__srcid__project_id
+    are retained for the 10e budget hook."""
+    from kion.meta.load import ResourceMeta
+    m = {"ou": ResourceMeta("ou", read_path="/v3/ou", read_method="GET"),
+         "project": ResourceMeta("project", read_path="/v3/project", read_method="GET"),
+         "budget": ResourceMeta("budget", read_path="/v3/budget/{id}", read_method="GET")}
+    client = StubClient({
+        "/v3/ou": [{"id": 9, "name": "Root", "parent_ou_id": None}],
+        "/v3/project": [{"id": 5, "name": "App", "ou_id": 9}],
+        "/v3/ou/9/budget": [
+            {"config": {"id": 100, "name": "FY24", "start_datecode": "202401",
+                        "end_datecode": "202412"},
+             "data": [{"amount": "1000", "datecode": "202401",
+                       "funding_source_id": 55, "priority": 1}]},
+        ],
+        "/v3/project/5/budget": [],
+    })
+    refs = {"ou": [], "project": [Reference("ou_id", "ou", "name")],
+            "budget": [Reference("ou_id", "ou", "name", optional=True),
+                      Reference("project_id", "project", "name", optional=True),
+                      Reference("funding_source_id", "funding_source", "name", many=True)]}
+    nk = {"ou": {"kind": "name_in_parent", "parent_field": "parent_ou_id"},
+          "project": {"kind": "name_in_parent", "parent_field": "ou_id"},
+          "budget": {"kind": "date_range"}}
+    inv = build_inventory(client, m, refs, nk, ["ou", "project", "budget"])
+    budgets = inv["budget"]
+    assert len(budgets) == 1
+    rec = budgets[0]
+    assert rec["natural_key"] == ("202401", "202412")
+    assert rec["fields"]["data"] == [{"amount": "1000", "datecode": "202401",
+                                      "funding_source_id": 55, "priority": 1}]
+    assert rec["fields"]["__srcid__ou_id"] == 9
+    assert rec["fields"]["ou_id"] == ("root",)   # translated via to_natural
+    assert rec["fields"]["__srcid__project_id"] is None
+    assert rec["fields"]["project_id"] is None
+
+
+def test_inventory_reads_scopes_via_export_shaping():
+    """scope records come from export._export_scopes -- account_numbers/criteria
+    are export-shaped and pass through untouched (already natural), and
+    __srcid__project_id is retained since project_id is still a raw source id."""
+    from kion.meta.load import ResourceMeta
+    m = {"project": ResourceMeta("project", read_path="/v3/project", read_method="GET"),
+         "scope": ResourceMeta("scope", read_path="/beta/scope", read_method="GET")}
+    client = StubClient({
+        "/v3/project": [{"id": 5, "name": "App", "ou_id": 9}],
+        "/v3/account": [{"id": 1, "account_number": "111"}],
+        "/beta/scope": [
+            {"id": 42, "name": "My Scope", "alias": "ms", "description": "",
+             "project_id": 5, "start_datecode": "202401", "end_datecode": None,
+             "active_criteria_record": {
+                 "criteria": {"account_criteria": {"account_ids": [1]}}}},
+        ],
+    })
+    refs = {"project": [Reference("ou_id", "ou", "name")],
+            "scope": [Reference("project_id", "project", "name"),
+                     Reference("account_numbers", "account", "account_number", many=True)]}
+    nk = {"project": {"kind": "name_in_parent", "parent_field": "ou_id"},
+          "scope": {"kind": "name_in_parent", "parent_field": "project_id"}}
+    inv = build_inventory(client, m, refs, nk, ["project", "scope"])
+    scopes = inv["scope"]
+    assert len(scopes) == 1
+    rec = scopes[0]
+    assert rec["fields"]["account_numbers"] == ["111"]
+    assert rec["fields"]["criteria"] == {"account_criteria": {}}
+    assert rec["fields"]["__srcid__project_id"] == 5
+    assert rec["fields"]["project_id"] == ("app",)   # translated via to_natural

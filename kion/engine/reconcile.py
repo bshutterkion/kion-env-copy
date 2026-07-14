@@ -170,6 +170,14 @@ class EngineReconciler:
                 self.warnings.append(f"target {res} list failed: {e.status}")
 
             records = list_records(self.client, lp, on_error=_on_error)  # shared unwrap + pagination
+            if res == "account":
+                # Union in the target's cached (unassociated) accounts,
+                # mirroring Importer._index_target -- an account is either
+                # associated (/v3/account) or cached (/v3/account-cache),
+                # never both, so a scope referencing an ADOPTED account (either
+                # bucket) must be resolvable via the normal adopt index too.
+                records = records + list_records(
+                    self.client, "/v3/account-cache", on_error=_on_error)
 
             key_map, ids = {}, set()
             for rec in records:
@@ -183,6 +191,20 @@ class EngineReconciler:
                     continue
             self._t_key[res] = key_map
             self._t_ids[res] = ids
+
+            if res == "account":
+                # Pre-populate the account-number index from EXISTING target
+                # accounts (not just ones this run creates -- see
+                # kion.overrides.registry._account_post_create for the
+                # create-time half) so the scope pass can resolve accounts
+                # adopted here. setdefault (not overwrite) so an associated
+                # account wins over a same-numbered cache entry, matching
+                # Importer._index_target.
+                for rec in records:
+                    num, rid = rec.get("account_number"), rec.get("id")
+                    if num and rid is not None:
+                        self.t_acct_by_number.setdefault(num, rid)
+                self.t_acct_ids |= ids
 
     # -- ctx helpers hooks call (via the reconciler passed as ctx) -------------
     def resolve_scheme(self, name, entity_type: str, label: str):
