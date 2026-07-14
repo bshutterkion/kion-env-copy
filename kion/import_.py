@@ -926,6 +926,14 @@ class Importer:
                 print(f"  = adopt {label} (existing id {found})")
                 continue
 
+            # Every create family requires the provider identifier (account_number /
+            # subscription_uuid / …). A blank one can never be created (nor adopted),
+            # so treat it as an expected skip rather than letting the API 400 it.
+            if not num:
+                self.warnings.append(f"{label}: no account_number, cannot create, skipped")
+                self.skipped["accounts"] += 1
+                continue
+
             # Payer (billing source) is required by BOTH create families; without it
             # the account can't be recreated at all (its billing source type wasn't
             # recreatable — azure/gcp/anthropic).

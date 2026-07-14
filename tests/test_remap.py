@@ -235,6 +235,17 @@ def test_reconcile_accounts_cache_sourced_goes_to_cache():
     assert calls[0]["path"] == "/v3/account-cache?account-type=custom"
 
 
+def test_reconcile_accounts_skips_blank_account_number():
+    acct = {"source_id": "cache:1", "provider": "aws", "account_number": "",
+            "account_name": "test-create-account", "account_type_id": 1,
+            "project_id": None, "payer_id": 9}
+    imp, calls = _accounts_importer([acct], billing_map={"9": 900})
+    imp._reconcile_accounts()
+    assert calls == []                    # never attempted (would 400)
+    assert imp.skipped["accounts"] == 1
+    assert imp.failed["accounts"] == 0
+
+
 def test_reconcile_accounts_skips_when_payer_unrecreatable():
     acct = {"source_id": 1, "provider": "azure", "account_number": "n1",
             "account_name": "x", "account_type_id": 3, "project_id": 5, "payer_id": 9}
