@@ -71,7 +71,7 @@ app_role:
   kind: blended
 
 # Fully raw: the public /beta create+update take NO typed body in the SDK
-# (PostDashboard(ctx)/PatchDashboard(ctx,params)), so there is nothing to blend —
+# (PostDashboard(ctx)/PatchDashboard(ctx,params)), so there is nothing to blend.
 # the raw archetype already POSTs/PATCHes the public /beta paths.
 dashboard:
   kind: raw_http
@@ -92,6 +92,34 @@ permission_scheme:
 # custom_billing_source and tags the role field role_name (model:
 # bucket_access_role).
 billing_source:
+  kind: blended
+
+# Blended, same shape as billing_source: typed public create/update/delete on
+# the /oci paths, with the private /v1/payer read nesting the record under
+# oci_billing_source. private_key comes back "REDACTED" and is declared
+# write_only in private_endpoints.yaml.
+billing_source_oci:
+  kind: blended
+
+# GovCloud info hangs off a commercial billing source: exactly one per payer,
+# with all four verbs on the same parent-scoped path. The create params field is
+# the PARENT id, not a literal discriminator, so it is declared create-under-
+# parent. Otherwise the resolver reads the trailing static "govcloud" segment
+# as a __qs__ discriminator value and emits ID: "govcloud" into a uint64 field.
+billing_source_govcloud:
+  kind: entity
+  create_parent_param: ID
+  create_parent_field: payer_id
+
+# AWS billing source: public create + shared delete, no update endpoint at all,
+# and no public by-id read. The private /v1/payer read nests under aws_payer.
+# key_id/key_secret come back "REDACTED" and are declared write_only.
+billing_source_aws:
+  kind: blended
+
+# GCP billing source: public create + shared delete, no update endpoint, and no
+# public by-id read. The private /v1/payer read nests under gcp_billing_account.
+billing_source_gcp:
   kind: blended
 
 # Parent-scoped resource with no by-id GET: the read lists enforcements under the
@@ -124,6 +152,18 @@ ou_enforcement:
   record_type: OUEnforcement
   response_type: OUEnforcementListResponse
 
+# idms open-id sub-resources: create is scoped under the parent open-id (its id
+# comes from the open_id_id model attribute), while read/update/delete address
+# the record by its own id, the entity create-under-parent extension.
+idms_open_id_access_rule:
+  kind: entity
+  create_parent_param: ID
+  create_parent_field: open_id_id
+idms_open_id_group_association:
+  kind: entity
+  create_parent_param: ID
+  create_parent_field: open_id_id
+
 # Bespoke archetypes: resource + data source bodies emitted verbatim from
 # dedicated templates (internal/kgen/crud/*.gtpl) because their CRUD control
 # flow fits no derived archetype. Schemas/models still come from the schema and
@@ -154,3 +194,7 @@ aws_account:
 # emitted; its schema still comes from the schema stage.
 gcp_regions:
   kind: datasource_only
+
+# Fully-private note (no public surface), all CRUD over raw HTTP against /v2.
+funding_source_note:
+  kind: raw_http

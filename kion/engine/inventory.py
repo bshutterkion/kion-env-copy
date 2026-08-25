@@ -93,7 +93,7 @@ def _read_accounts(client, res_refs, id_to_key) -> list[dict]:
     (``/v3/account``) and cached, unassociated accounts (``/v3/account-cache``),
     mirroring ``export._export_accounts`` / ``_account_record``.
 
-    ``account`` has no ``generator_config.yaml`` read entry (a vendor gap) and
+    ``account``'s ``generator_config.yaml`` read entry is the by-id GET, and
     its records don't fit the generic list path: cached ids are namespaced
     ``cache:<id>`` so they never collide with associated ids, and the record's
     portable shape comes from ``_account_record`` (provider derived via

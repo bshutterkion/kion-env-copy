@@ -37,12 +37,12 @@ Three layers, increasing in how much of them is hand-authored:
 Copied verbatim from the Kion Terraform provider's codegen (`…/terraform-provider/
 new-terraform-provider/codegen/`) by `scripts/sync-provider-meta.sh
 [provider-dir]`, which also stamps the provider's short commit SHA into
-`kion/meta/vendor/VERSION` (currently `0874805`). The engine never reaches outside
+`kion/meta/vendor/VERSION` (currently `89a9195`). The engine never reaches outside
 this repo at runtime — everything it reads is one of these three files:
 
 - **`generator_config.yaml`** — per-resource CRUD op map: `create`/`read`/`update`/
   `delete` `{path, method}` plus `schema.ignores` (fields to drop when building a
-  create payload). Covers ~61 resources today; `kion.meta.load.load_resource_meta`
+  create payload). Covers 70 resources today; `kion.meta.load.load_resource_meta`
   parses it into one `ResourceMeta` per resource.
 - **`crud_archetypes.yaml`** — non-standard identity/read patterns (e.g.
   `compound_key_parent_read` for `scope_criteria`, `no_read` for resources with no
@@ -88,18 +88,18 @@ copying) has no concept of "resolve this field by name on a different install":
 
 A small dict merged onto the vendored `ResourceMeta` for resources whose read the
 generator config doesn't describe under the name the engine needs. Today this is
-just `account`: it has no `generator_config.yaml` entry (a vendor gap — its create
-op is flagged `INCOMPLETE` in the vendored file), so `READ_OVERRIDES["account"]`
-supplies `read_path: /v3/account` and a `create_path` (the create path is unused —
-account creation goes through the `build_create_payload` hook instead, since it
-routes to either `/v3/account` or `/v3/account-cache` depending on whether the
-project resolves). `load_resource_meta` creates a `ResourceMeta` from scratch for a
-name absent from the vendored config, or overlays the supplied fields onto one that
-exists.
+just `account`: its `generator_config.yaml` entry (added upstream at `89a9195`)
+records the by-id read `/v3/account/{id}` and an aws-only cache create, so
+`READ_OVERRIDES["account"]` pins `read_path: /v3/account`. The vendored create
+path is unused — account creation goes through the `build_create_payload` hook
+instead, since it routes to either `/v3/account` or `/v3/account-cache` depending
+on whether the project resolves. `load_resource_meta` creates a `ResourceMeta`
+from scratch for a name absent from the vendored config, or overlays the supplied
+fields onto one that exists.
 
 `_engine_meta()` (in `kion_copy.py` and duplicated in `scripts/equivalence_check.py`
 — not shared, see "surprises" below) takes the **intersection** of
-`load_resource_meta()`'s ~61 resources and `load_natural_keys()`'s 7: a resource
+`load_resource_meta()`'s 70 resources and `load_natural_keys()`'s 7: a resource
 with `ResourceMeta` but no natural-key spec would `KeyError` inside
 `natural_key()`, so only the 7 onboarded resources are ever walked.
 
@@ -131,7 +131,7 @@ export-shaped readers** instead of being re-derived from scratch:
 
 | resource | reader | why |
 |---|---|---|
-| `account` | `_read_accounts` → `export._account_record` | union of `/v3/account` (project-associated) + `/v3/account-cache` (unassociated); cache ids are namespaced `cache:<id>` so they never collide with associated ids in the same id space. No `generator_config.yaml` read entry either. |
+| `account` | `_read_accounts` → `export._account_record` | union of `/v3/account` (project-associated) + `/v3/account-cache` (unassociated); cache ids are namespaced `cache:<id>` so they never collide with associated ids in the same id space. Its `generator_config.yaml` read entry is the by-id GET, not a list. |
 | `billing_source` | `_read_billing_sources` → `export._export_billing_sources` | a raw `/v4/billing-source` record has no top-level `name` (it's nested per-type: `aws_payer.name`, `gcp_payer.gcp_billing_account.name`, ...); the export reader already flattens it. |
 | `budget` | `_read_budgets` → `export._export_budgets` | budgets aren't a single global list — they're read per OU/project (`/v3/{ou,project}/{id}/budget`); the export reader already walks that. |
 
