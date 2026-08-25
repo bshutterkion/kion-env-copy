@@ -167,7 +167,7 @@ no resolvable project → the cache).
 
 `kion/engine/` + `kion/meta/` + `kion/overrides/` is a generic, metadata-driven
 engine that reproduces the hand-written `export.py`/`import_.py` above and is meant
-to generalize to the ~60 resources the Kion Terraform provider supports (this repo
+to generalize to the 68 resources the Kion Terraform provider supports (this repo
 copies 7 today). It reads provider codegen metadata (vendored under
 `kion/meta/vendor/`, refreshed by `scripts/sync-provider-meta.sh`) plus two authored
 files — `kion/meta/references.yaml` (FK fields → target resource + natural key) and
@@ -184,10 +184,20 @@ per-entity action counts; it prints `EQUIVALENT` today for the 7. Full architect
 the metadata layers, each hook type, and the "add a resource" recipe:
 `docs/engine.md`. Design rationale: `docs/superpowers/specs/2026-07-14-tf-resource-parity-engine-design.md`.
 
-## Out of scope (not copied)
+## Not copied yet (the goal is provider parity)
 
-Cloud rules, labels, custom variables, compliance, app-role permission
-mappings. The tool copies org/financial structure only.
+**Target state: everything the Kion Terraform provider manages — all 68 resource
+types — so teams without Terraform access can move an environment the same way.**
+What is listed here is unimplemented, not excluded by design.
+
+Not copied today: cloud rules, labels, custom variables, compliance, app-role
+permission mappings. Cloud accounts, billing sources and scopes *are* copied
+(accounts and billing sources as shells — the read API never returns their
+secrets).
+
+The provider repo's `codegen/import_manifest.json` is the reference for the
+remaining work: it lists all 68 tf_types with the read shape and import-id format
+of each, and `kion-import --probe` reports what a given install actually holds.
 
 ## Conventions
 
