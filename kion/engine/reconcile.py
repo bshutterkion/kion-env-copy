@@ -156,7 +156,7 @@ class EngineReconciler:
 
         The per-resource loop is scoped to ``self.inventory`` (the resources
         actually being reconciled), not all of ``self.meta`` — ``self.meta`` is
-        the full ~60-resource generator_config, most of which aren't in play for a
+        the full 70-resource generator_config, most of which aren't in play for a
         given run. The ctx enrichment (``_index_ctx``) is separate and
         unconditional, so it still runs when the inventory is empty."""
         if self.config is not None:

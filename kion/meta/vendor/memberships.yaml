@@ -1,6 +1,6 @@
 # Owner/member associations that Kion manages via SEPARATE add/remove endpoints
 # rather than the main update body. The generated Create sets initial values (the
-# create body carries them), but the main PATCH does NOT — so the entity Update
+# create body carries them), but the main PATCH does NOT, so the entity Update
 # must diff prior state vs plan and call the add/remove endpoints. Without this,
 # changing an owner on an existing resource is a silent no-op.
 #
