@@ -11,7 +11,7 @@ Spec: `docs/superpowers/specs/2026-07-14-tf-resource-parity-engine-design.md`.
 ## Purpose
 
 `export.py`/`import_.py` hand-code the same read → translate → reconcile → write
-logic once per entity kind. That doesn't scale to the ~60 resources the Kion
+logic once per entity kind. That doesn't scale to the 68 resources the Kion
 Terraform provider covers, and it silently drifts from what the provider's own
 codegen metadata already knows about each resource's CRUD shape.
 

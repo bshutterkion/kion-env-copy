@@ -158,10 +158,21 @@ be mapped — expected, e.g. a scope with no target accounts) and **`failed`** (
 API error on create). `skipped`/`failed` are reported separately so expected gaps
 don't look like errors.
 
-### Out of scope
+### Not copied yet
 
-Cloud accounts, cloud rules, labels, custom variables, compliance, and app-role
-permission mappings are not copied (org/financial structure only).
+**The goal is parity with the Kion Terraform provider** — every resource it
+manages, copyable here, so teams without Terraform access can still move an
+environment. Today this tool covers the org/financial structure; the rest is
+not-yet-implemented, not out of scope.
+
+Not copied today: cloud rules, labels, custom variables, compliance, and
+app-role permission mappings. (Cloud **accounts** *are* copied — as shells; see
+the note above. They were listed here in error.)
+
+The provider covers 68 resource types; `kion-import` in that repo enumerates all
+68 from a live install and its `codegen/import_manifest.json` records the read
+shape and import-id format for each — that manifest is the reference for what
+this tool still has to grow. See `docs/superpowers/plans/2026-08-24-tfstate-export.md`.
 
 Always read the dry-run warnings — they list every default applied and every
 reference dropped before you commit with `--apply`.
