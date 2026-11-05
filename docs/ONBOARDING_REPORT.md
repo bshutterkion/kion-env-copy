@@ -1,5 +1,25 @@
 # Resource Onboarding Report — metadata sweep (feature/engine-onboard-resources)
 
+> **Correction, 2026-08-25 — one class of rationale in this report no longer holds.**
+>
+> Several `skip` decisions below cite CLAUDE.md's `## Out of scope (not copied)`
+> section as an *independently sufficient policy* reason — for labels, custom
+> variables, compliance, and app-role permission mappings. That section has been
+> renamed to `## Not copied yet (the goal is provider parity)`, and the policy it
+> stated has changed: **the goal is parity with all 68 Terraform-provider
+> resources**, so these are unimplemented, not excluded by design.
+>
+> The **mechanical** grounds in those same entries are unaffected and still
+> stand — missing natural key, compound/polymorphic identity, bulk-PATCH
+> endpoints with no per-record shape, references to resources the engine does not
+> yet copy. Read each entry for its mechanical reasoning; disregard the policy
+> half.
+>
+> Separately: entries describing `aws_resource_tag`,
+> `ou_cloud_access_role_exemption` or `project_cloud_access_role_exemption` as
+> unreadable are out of date — all three have real reads as of provider `main` @
+> 69c566c. See `docs/superpowers/plans/2026-08-24-tfstate-export.md`.
+
 ## Status (final)
 
 This report went through two corrective passes after the original sweep.
